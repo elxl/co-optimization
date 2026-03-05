@@ -79,6 +79,12 @@ parser.add_argument(
     default=0.33,
     help='Value of time (waiting/walking)'
 )
+parser.add_argument(
+    "--mip", 
+    type=float,
+    default=0.01,
+    help='Optimization gap.'
+)
 
 args = parser.parse_args()
 demand_f = os.path.join(args.input_dir, args.demand_file)
@@ -166,7 +172,7 @@ for (o, d), group in paths_df.groupby(['o_zone', 'd_zone']):
 #------Build Model-------#
 m = gp.Model("Multimodal_BPR_Optimization")
 m.params.NonConvex = 0 # Allow non-convex quadratic/non-linear terms
-m.params.MIPGap = 0.02
+m.params.MIPGap = args.mip
 
 # Variables
 x_ap = m.addVars(paths_df['path_id'].unique(), lb=0, name="x_path") # Flow on AMoD path
