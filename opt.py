@@ -28,7 +28,7 @@ parser.add_argument(
 parser.add_argument(
     "--transit_file", 
     type=str,
-    default='metro/optimization_inouts.pkl.gz',
+    default='metro/optimization_inputs.pkl.gz',
     help='Directory for transit file'    
 )
 parser.add_argument(
