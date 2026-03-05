@@ -3,51 +3,133 @@ from gurobipy import GRB
 import pickle
 import pandas as pd
 import numpy as np
-import gzip, pickle
+import gzip, pickle,os
+import argparse
 
+parser = argparse.ArgumentParser(description="Co optimization")
+parser.add_argument(
+    '-o', "--output_dir", 
+    type=str,
+    default='./results',
+    help='Directory for result files'
+)
+parser.add_argument(
+    "--input_dir", 
+    type=str,
+    default='./data_nyc/processed',
+    help='Directory for input files'
+)
+parser.add_argument(
+    "--demand_file", 
+    type=str,
+    default='demand.csv',
+    help='Directory for demand file'    
+)
+parser.add_argument(
+    "--transit_file", 
+    type=str,
+    default='metro/optimization_inouts.pkl.gz',
+    help='Directory for transit file'    
+)
+parser.add_argument(
+    "--amod_file", 
+    type=str,
+    default='on_demand/paths.csv',
+    help='Directory for amod file'    
+)
+parser.add_argument(
+    "--amod_map", 
+    type=str,
+    default='on_demand/map.csv',
+    help='Directory for driving network'    
+)
+parser.add_argument(
+    "--bl", 
+    type=float,
+    default=1.0,
+    help='Background traffic level'
+)
+parser.add_argument(
+    "--ca", 
+    type=float,
+    default=1.0,
+    help='AMoD operation cost per km'
+)
+parser.add_argument(
+    "--cl", 
+    type=float,
+    default=100,
+    help='Metro operation cost per line per hour'
+)
+parser.add_argument(
+    "--walk", 
+    type=float,
+    default=3.6,
+    help='Walking speed (mph)'
+)
+parser.add_argument(
+    "--vot", 
+    type=float,
+    default=0.3,
+    help='Value of time (in-vehicle)'
+)
+parser.add_argument(
+    "--vot1", 
+    type=float,
+    default=0.33,
+    help='Value of time (waiting/walking)'
+)
+
+args = parser.parse_args()
+demand_f = os.path.join(args.input_dir, args.demand_file)
+transit_f = os.path.join(args.input_dir, args.transit_file)
+map_f = os.path.join(args.input_dir, args.amod_map)
+amod_f = os.path.join(args.input_dir, args.amod_file)
+output_dir = args.output_dir
 
 #--------Data Preparation-----------#
 # Load transit lines and routes data
-with gzip.open("data_nyc/processed/metro/optimization_inputs.pkl.gz", "rb") as f:
+with gzip.open(transit_f, "rb") as f:
     data = pickle.load(f)
 
 opt_data = data["optimization_data"] # {(O, D): {walk_dist, tau_pt, gamma_odl, eta_e_od}}
 lines_dict = data["lines"] # {line_id: [(u,v), ...]}
 
 # Load on-demand map and routes
-map_df = pd.read_csv("data_nyc/processed/on_demand/map.csv") # Road edges (source, target, length, lanes, maxspeed)
-paths_df = pd.read_csv("data_nyc/processed/on_demand/paths.csv") # AMOD candidate paths (o_zone, d_zone, path_id, u, v)
+map_df = pd.read_csv(map_f) # Road edges (source, target, length, lanes, maxspeed)
+paths_df = pd.read_csv(amod_f) # AMOD candidate paths (o_zone, d_zone, path_id, u, v)
 
 # Load demand data
-demand = pd.read_csv("data_nyc/processed/demand.csv")
+demand = pd.read_csv(demand_f)
 
 OD_pairs = list(opt_data.keys())
 demand_dict = {od:demand[(demand['PULocationID']==od[0]) & (demand['DOLocationID']==od[1])]['trip_count'].values[0] for od in OD_pairs}
 
 # Start with samll examples to debug
-sub_od = list(opt_data.keys())[:10]
-sub_od_set = set(map(tuple, sub_od))  # ensure (o, d) tuple format
-opt_data = {k: v for k, v in opt_data.items() if k in sub_od_set}
-paths_df = paths_df[
-    paths_df.apply(lambda r: (r['o_zone'], r['d_zone']) in sub_od_set, axis=1)
-]
-demand_dict = {k: v for k, v in demand_dict.items() if k in sub_od_set}
-OD_pairs = list(opt_data.keys())
+# sub_od = list(opt_data.keys())[:10]
+# sub_od_set = set(map(tuple, sub_od))  # ensure (o, d) tuple format
+# opt_data = {k: v for k, v in opt_data.items() if k in sub_od_set}
+# paths_df = paths_df[
+#     paths_df.apply(lambda r: (r['o_zone'], r['d_zone']) in sub_od_set, axis=1)
+# ]
+# demand_dict = {k: v for k, v in demand_dict.items() if k in sub_od_set}
+# OD_pairs = list(opt_data.keys())
 
 
 #------Optiization Setup-------#
 # Parameters and sets
-VOT = 0.3            # Value of time ($/min)
-VOT_OTHER = 0.33      # Value of time (walk/stand)
-C_ij = 0.8           # AMOD unit operating cost ($/km)
-K_l = 200         # Transit unit operating cost ($/hr per line)
+VOT = args.vot            # Value of time ($/min)
+VOT_OTHER = args.vot1      # Value of time (walk/stand)
+C_ij = args.ca           # AMOD unit operating cost ($/km)
+K_l = args.cl        # Transit unit operating cost ($/hr per line)
 C_l_unit = 1400       # Passengers per train capacity
 alpha = 0.15         # Standard BPR alpha
 beta = 4.0           # Standard BPR beta
-C_lane = 1800        # Capacity per lane (vehicles/hr)
-S_set = [4, 6, 12, 20]   # Frequency candidates (trains per hour)
-W_SPEED = 3.6 * 1000/60 # Walking speed m/minute
-AMOD_WAIT = 3 # TODO: add AMoD waiting time
+C_lane = 700        # Capacity per lane (vehicles/hr)
+S_set = [2, 3, 4, 5, 6, 12, 20]   # Frequency candidates (trains per hour)
+W_SPEED = args.walk * 1000/60 # Walking speed m/minute
+AMOD_WAIT = 5 # AMoD average pickup time
+BL = args.bl # Background traffic level
 
 L = list(lines_dict.keys()) # Lines
 E_a = list(zip(map_df['source'], map_df['target'])) # Edges
@@ -60,8 +142,8 @@ dist_map = map_df.set_index(['source', 'target'])['length'].to_dict()
 T0_map = map_df.set_index(['source', 'target'])['T0'].to_dict()
 Cap_map = map_df.set_index(['source', 'target'])['Capacity'].to_dict()
 
-# Background Traffic (e.g., 20% of capacity)
-b_map = {edge: Cap_map[edge] * 0.5 for edge in E_a}
+# Background Traffic
+b_map = {edge: Cap_map[edge] * BL for edge in E_a}
 
 # Calculate Baseline Cost (Constant to be subtracted)
 # Baseline = sum( b * T0 * (1 + alpha * (b/C)^beta) )
@@ -84,6 +166,7 @@ for (o, d), group in paths_df.groupby(['o_zone', 'd_zone']):
 #------Build Model-------#
 m = gp.Model("Multimodal_BPR_Optimization")
 m.params.NonConvex = 0 # Allow non-convex quadratic/non-linear terms
+m.params.MIPGap = 0.02
 
 # Variables
 x_ap = m.addVars(paths_df['path_id'].unique(), lb=0, name="x_path") # Flow on AMoD path
@@ -114,6 +197,7 @@ for e in Cap_map.keys():
     p_on_e = paths_df[(paths_df['u'] == e[0]) & (paths_df['v'] == e[1])]['path_id'].unique() # Find all paths contain edge e
     m.addConstr(f[e] == r[e] + x_ap.sum(p_on_e))
     # Total flow on edge and BPR
+    m.addConstr(v[e] == b_map[e] + f[e])
     # v_ratio will be around 0.5 to 1.5
     m.addConstr(v_ratio[e] == v[e] / Cap_map[e])
     # (v/C)^5 will be around 0.03 to 7.6
@@ -158,13 +242,14 @@ for (od, l, s) in w.keys():
 
 # Objective
 road_time_cost = gp.quicksum(T0_map[e] * (v[e] + alpha * Cap_map[e] * v_ratio_pow[e]) for e in E_a) - baseline_road_cost
+amod_wait = gp.quicksum(AMOD_WAIT * x_pt[od] for od in OD_pairs)
 transit_time_fixed = gp.quicksum(x_pt[od] * opt_data[od]['tau_pt'] for od in OD_pairs)
 transit_walk_fixed = gp.quicksum(x_pt[od] * opt_data[od]['walking_dist']/W_SPEED for od in OD_pairs)
-transit_waiting = 0.5 * gp.quicksum((1/s) * w[od, l, s] for (od, l, s) in w.keys())
+transit_waiting = 0.5 * 60 * gp.quicksum((1/s) * w[od, l, s] for (od, l, s) in w.keys()) # Pay attention to the unit of time
 amod_op_cost = gp.quicksum(C_ij * f[u, v] * (dist_map[u, v] / 1000.0) for u, v in E_a)
 op_cost = gp.quicksum(K_l * s_l[l] for l in L)
 
-m.setObjective(VOT * (road_time_cost + transit_time_fixed) + VOT_OTHER * (transit_waiting + transit_walk_fixed)+ amod_op_cost + op_cost, GRB.MINIMIZE)
+m.setObjective(VOT * (road_time_cost + transit_time_fixed) + VOT_OTHER * (transit_waiting + transit_walk_fixed + amod_wait)+ amod_op_cost + op_cost, GRB.MINIMIZE)
 
 m.optimize()
 
@@ -182,13 +267,27 @@ if m.status == GRB.INFEASIBLE:
 
 #-------------Summarize results----------------#
 if m.status == GRB.OPTIMAL:
-    # 1. Frquency setting
-    freq_data = []
+    # 1. Frquency setting, usage and operation cost
+    transit_summary = []
+
     for l in L:
-        for s in S_set:
-            if z[l,s].X > 0.5:
-                freq_data.append({'Line': l, 'Selected Frequency': s})
-    print(pd.DataFrame(freq_data).head(10))
+        # Sum transit flow for all OD pairs that use this line l
+        # We check if l is in the 'gamma_odl' list for that OD pair
+        line_passengers = sum(x_pt[od].X for od in OD_pairs if l in opt_data[od]['gamma_odl'])
+        
+        transit_summary.append({
+            'Line_ID': l,
+            'Frequency_vph': round(s_l[l].X, 2),
+            'Total_Passengers': round(line_passengers, 2),
+            'Load_Factor': round(line_passengers / (C_l_unit * s_l[l].X), 3) if s_l[l].X > 0 else 0
+        })
+
+    # Create DataFrame and save to CSV
+    df_transit = pd.DataFrame(transit_summary)
+    df_transit.to_parquet(os.path.join(output_dir, f"transit_line_usage_{BL}_{C_ij}_{K_l}.parquet"))
+
+    total_transit_op_cost = sum(K_l * s_l[l].X for l in L)
+    print(f"Transit Operation Cost: ${total_transit_op_cost:,.2f} (K_l = {K_l})")
 
     # 2. AMoD total distance
     total_rebal = sum(r[e].X * dist_map[e] for e in E_a) / 1000
@@ -202,39 +301,39 @@ if m.status == GRB.OPTIMAL:
     for e in E_a:
         v_total = v[e].X
         ratio = v_total / Cap_map[e]
-        # BPR: T = T0 * (1 + alpha * (v/C)^beta)
+        # BPR: T = T0 * (1 + alpha * (ratio^beta))
         congested_time_map[e] = T0_map[e] * (1 + alpha * (ratio**beta))
     
     # Calculate Line Wait Times (0.5 * 1/frequency)
-    # Even if no one uses a line, it has a frequency decided by the model
     line_wait_map = {l: (0.5 * 60 / s_l[l].X) if s_l[l].X > 0 else 0 for l in L}
 
     detailed_summary = []
     for od in OD_pairs:
-        # --- AMoD Potential Metrics ---
+        # --- AMoD Metrics & Path Usage ---
         rel_paths = paths_df[(paths_df['o_zone'] == od[0]) & (paths_df['d_zone'] == od[1])]['path_id'].unique()
         amod_flow = x_a[od].X
         
-        # We calculate the metrics for the best candidate path (path_0) 
-        # as the 'potential' if no flow is assigned.
+        # Calculate how many paths are actually carrying flow
+        used_paths_count = sum(1 for p in rel_paths if x_ap[p].X > 1e-6)
+        
+        # Potential metrics logic
         best_p = sorted(rel_paths)[0] if len(rel_paths) > 0 else None
         
         if amod_flow > 1e-6:
             # Weighted average of the paths actually used
             pot_amod_dist = sum(x_ap[p].X * sum(dist_map[r.u, r.v] for r in paths_df[paths_df['path_id']==p].itertuples()) 
                                for p in rel_paths) / (amod_flow * 1000.0)
-            pot_amod_time = sum(x_ap[p].X * sum(congested_time_map[r.u, r.v] for r in paths_df[paths_df['path_id']==p].itertuples()) 
+            pot_amod_time = sum(x_ap[p].X * (sum(congested_time_map[r.u, r.v] for r in paths_df[paths_df['path_id']==p].itertuples())+AMOD_WAIT) 
                                for p in rel_paths) / amod_flow
+            # Note: You might want to add AMOD_WAIT here as well for consistency
         elif best_p:
-            # Potential metrics based on the shortest candidate path
             p_edges = paths_df[paths_df['path_id'] == best_p]
             pot_amod_dist = sum(dist_map[r.u, r.v] for r in p_edges.itertuples()) / 1000.0
-            pot_amod_time = sum(congested_time_map[r.u, r.v] for r in p_edges.itertuples())
+            pot_amod_time = sum(congested_time_map[r.u, r.v] for r in p_edges.itertuples()) + AMOD_WAIT
         else:
             pot_amod_dist, pot_amod_time = 0, 0
 
         # --- Transit Potential Metrics ---
-        # Wait time is the sum of wait times for all lines in the passenger's route
         pot_transit_wait = sum(line_wait_map[l] for l in opt_data[od]['gamma_odl'])
         walking_time = opt_data[od]['walking_dist'] / W_SPEED
         pot_transit_total_time = opt_data[od]['tau_pt'] + walking_time + pot_transit_wait
@@ -244,14 +343,28 @@ if m.status == GRB.OPTIMAL:
             'Demand': demand_dict[od],
             'AMoD_Flow': round(amod_flow, 2),
             'Transit_Flow': round(x_pt[od].X, 2),
+            'AMoD_Paths_Used': used_paths_count,
             'Pot_AMoD_Time_min': round(pot_amod_time, 2),
             'Pot_AMoD_Dist_km': round(pot_amod_dist, 2),
             'Pot_Transit_Wait_min': round(pot_transit_wait, 2),
             'Pot_Transit_Total_min': round(pot_transit_total_time, 2)
         })
+
     df_results = pd.DataFrame(detailed_summary)
-    print("\n--- Detailed Mode Potential Metrics ---")
-    print(df_results.sort_values(by='Demand', ascending=False))
+    df_results.to_parquet(os.path.join(output_dir, f"mode_split_{BL}_{C_ij}_{K_l}.parquet"))
+
+    # Calculate total flows
+    total_amod = df_results['AMoD_Flow'].sum()
+    total_transit = df_results['Transit_Flow'].sum()
+    total_demand = df_results['Demand'].sum()
+
+    # Calculate shares as percentages
+    amod_share = (total_amod / total_demand) * 100
+    transit_share = (total_transit / total_demand) * 100
+
+    print(f"Total Demand: {total_demand:,.0f} passengers")
+    print(f"Total AMoD Flow: {total_amod:,.2f} ({amod_share:.2f}%)")
+    print(f"Total Transit Flow: {total_transit:,.2f} ({transit_share:.2f}%)")
 
     # 4. Background traffic impact
     total_bg_increase_min = 0
@@ -277,3 +390,79 @@ if m.status == GRB.OPTIMAL:
     print("\n--- Background Traffic Impact ---")
     print(f"Total travel time increase for background traffic: {total_bg_increase_min:,.2f} minutes")
     print(f"Total external congestion cost: ${total_bg_cost_increase:,.2f}")
+
+    # 5. AMoD flow on edge
+    edge_results = []
+        
+    for e in E_a:
+        amod_flow = f[e].X
+        total_vol = v[e].X
+        capacity = Cap_map[e]
+        background = b_map[e]
+        
+        # Calculate the travel times for verification
+        # T = T0 * (1 + alpha * (v/C)**beta)
+        t_baseline = T0_map[e] * (1 + alpha * (background / capacity)**beta)
+        t_congested = T0_map[e] * (1 + alpha * (total_vol / capacity)**beta)
+        time_diff = t_congested - t_baseline
+        
+        edge_results.append({
+            'source': e[0],
+            'target': e[1],
+            'amod_flow_f_ij': round(amod_flow, 4),
+            'background_vol': round(background, 2),
+            'total_vol_v': round(total_vol, 2),
+            'capacity': capacity,
+            'v_c_ratio': round(total_vol / capacity, 4),
+            'time_increase_min': round(time_diff, 6)
+        })
+
+    # Create DataFrame and save
+    df_edges = pd.DataFrame(edge_results)
+    
+    # Filter for edges that actually have AMoD flow to see where the fleet is
+    df_active = df_edges[df_edges['amod_flow_f_ij'] > 1e-4]
+    
+    print(f"\n--- Edge Flow Analysis ---")
+    print(f"Total edges with AMoD flow: {len(df_active)} / {len(df_edges)}")
+    
+    # if not df_active.empty:
+    #     print("\nTop 10 Edges by AMoD Flow:")
+    #     print(df_active.sort_values(by='amod_flow_f_ij', ascending=False).head(10))
+    
+    # Save the full network state
+    df_edges.to_parquet(os.path.join(output_dir, f"edge_flows_full_{BL}_{C_ij}_{K_l}.parquet"))
+
+    # Final summary
+    avg_freq = df_transit['Frequency_vph'].mean()
+    avg_wait = df_results['Pot_Transit_Wait_min'].mean()
+    total_amod_op_cost = sum(C_ij * f[e].X * (dist_map[e] / 1000.0) for e in E_a)
+    run_summary = {
+        # Metadata / Inputs
+        "BL": BL,
+        "K_l": K_l,
+        "C_ij": C_ij,
+        "Total_Social_Cost": m.objVal,
+        
+        # Mode Split
+        "Total_Demand": total_demand,
+        "AMoD_Flow": total_amod,
+        "Transit_Flow": total_transit,
+        "AMoD_Share_pct": round(amod_share, 2),
+        "Transit_Share_pct": round(transit_share, 2),
+
+        # Supply Side Metrics
+        "Avg_Transit_Freq": round(avg_freq, 2),
+        "Avg_Wait_Time_min": round(avg_wait, 2),
+        "Transit_Op_Cost": round(total_transit_op_cost, 2),
+        "AMoD_Op_Cost": round(total_amod_op_cost, 2),
+        
+        # Road/Congestion Metrics
+        "Rebalancing_Dist_km": round(total_rebal, 2),
+        "AMoD_Pax_Dist_km": round(total_pass_dist, 2),
+        "Rebal_Ratio": round(total_rebal / total_pass_dist, 3) if total_pass_dist > 0 else 0,
+        "BG_Delay_Total_min": round(total_bg_increase_min, 2),
+        "BG_Congestion_Cost": round(total_bg_cost_increase, 2)
+    }
+    df_summary = pd.DataFrame([run_summary])
+    df_summary.to_csv(os.path.join(output_dir, f"summary_{BL}_{C_ij}_{K_l}.csv"), index=False)
