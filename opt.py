@@ -85,6 +85,12 @@ parser.add_argument(
     default=0.01,
     help='Optimization gap.'
 )
+parser.add_argument(
+    "--comp", 
+    type=bool,
+    default=False,
+    help='Save result file to compact format (parquet).'
+)
 
 args = parser.parse_args()
 demand_f = os.path.join(args.input_dir, args.demand_file)
@@ -249,9 +255,9 @@ for (od, l, s) in w.keys():
 # Objective
 road_time_cost = gp.quicksum(T0_map[e] * (v[e] + alpha * Cap_map[e] * v_ratio_pow[e]) for e in E_a) - baseline_road_cost
 amod_wait = gp.quicksum(AMOD_WAIT * x_pt[od] for od in OD_pairs)
-transit_time_fixed = gp.quicksum(x_pt[od] * opt_data[od]['tau_pt'] for od in OD_pairs)
-transit_walk_fixed = gp.quicksum(x_pt[od] * opt_data[od]['walking_dist']/W_SPEED for od in OD_pairs)
-transit_waiting = 0.5 * 60 * gp.quicksum((1/s) * w[od, l, s] for (od, l, s) in w.keys()) # Pay attention to the unit of time
+transit_time_fixed = gp.quicksum(x_pt[od] * opt_data[od]['tau_pt'] for od in OD_pairs) # transit in vehicle
+transit_walk_fixed = gp.quicksum(x_pt[od] * opt_data[od]['walking_dist']/W_SPEED for od in OD_pairs) # transit walking
+transit_waiting = 0.5 * 60 * gp.quicksum((1/s) * w[od, l, s] for (od, l, s) in w.keys()) # transit waiting (pay attention to the unit of time)
 amod_op_cost = gp.quicksum(C_ij * f[u, v] * (dist_map[u, v] / 1000.0) for u, v in E_a)
 op_cost = gp.quicksum(K_l * s_l[l] for l in L)
 
@@ -290,7 +296,10 @@ if m.status == GRB.OPTIMAL:
 
     # Create DataFrame and save to CSV
     df_transit = pd.DataFrame(transit_summary)
-    df_transit.to_parquet(os.path.join(output_dir, f"transit_line_usage_{BL}_{C_ij}_{K_l}.parquet"))
+    if args.comp:
+        df_transit.to_parquet(os.path.join(output_dir, f"transit_line_usage_{BL}_{C_ij}_{K_l}.parquet"))
+    else:
+        df_transit.to_csv(os.path.join(output_dir, f"transit_line_usage_{BL}_{C_ij}_{K_l}.csv"),index=False)
 
     total_transit_op_cost = sum(K_l * s_l[l].X for l in L)
     print(f"Transit Operation Cost: ${total_transit_op_cost:,.2f} (K_l = {K_l})")
@@ -310,7 +319,7 @@ if m.status == GRB.OPTIMAL:
         # BPR: T = T0 * (1 + alpha * (ratio^beta))
         congested_time_map[e] = T0_map[e] * (1 + alpha * (ratio**beta))
     
-    # Calculate Line Wait Times (0.5 * 1/frequency)
+    # Calculate Line Wait Times (0.5 * 1/frequency * 60 min)
     line_wait_map = {l: (0.5 * 60 / s_l[l].X) if s_l[l].X > 0 else 0 for l in L}
 
     detailed_summary = []
@@ -357,7 +366,10 @@ if m.status == GRB.OPTIMAL:
         })
 
     df_results = pd.DataFrame(detailed_summary)
-    df_results.to_parquet(os.path.join(output_dir, f"mode_split_{BL}_{C_ij}_{K_l}.parquet"))
+    if args.comp:
+        df_results.to_parquet(os.path.join(output_dir, f"mode_split_{BL}_{C_ij}_{K_l}.parquet"))
+    else:
+        df_results.to_csv(os.path.join(output_dir, f"mode_split_{BL}_{C_ij}_{K_l}.csv"),index=False)
 
     # Calculate total flows
     total_amod = df_results['AMoD_Flow'].sum()
@@ -437,7 +449,10 @@ if m.status == GRB.OPTIMAL:
     #     print(df_active.sort_values(by='amod_flow_f_ij', ascending=False).head(10))
     
     # Save the full network state
-    df_edges.to_parquet(os.path.join(output_dir, f"edge_flows_full_{BL}_{C_ij}_{K_l}.parquet"))
+    if args.comp:
+        df_edges.to_parquet(os.path.join(output_dir, f"edge_flows_full_{BL}_{C_ij}_{K_l}.parquet"))
+    else:
+        df_edges.to_csv(os.path.join(output_dir, f"edge_flows_full_{BL}_{C_ij}_{K_l}.csv"),index=False)
 
     # Final summary
     avg_freq = df_transit['Frequency_vph'].mean()
