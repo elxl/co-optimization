@@ -86,6 +86,18 @@ parser.add_argument(
     help='Optimization gap.'
 )
 parser.add_argument(
+    "--alpha", 
+    type=float,
+    default=0.15,
+    help='alpha parameter of BPR.'
+)
+parser.add_argument(
+    "--beta", 
+    type=float,
+    default=4,
+    help='beta parameter of BRP.'
+)
+parser.add_argument(
     "--comp", 
     type=bool,
     default=False,
@@ -135,8 +147,8 @@ VOT_OTHER = args.vot1      # Value of time (walk/stand)
 C_ij = args.ca           # AMOD unit operating cost ($/km)
 K_l = args.cl        # Transit unit operating cost ($/hr per line)
 C_l_unit = 1400       # Passengers per train capacity
-alpha = 0.15         # Standard BPR alpha
-beta = 4.0           # Standard BPR beta
+alpha = args.alpha         # Standard BPR alpha
+beta = args.beta          # Standard BPR beta
 C_lane = 700        # Capacity per lane (vehicles/hr)
 S_set = [2, 3, 4, 5, 6, 12, 20]   # Frequency candidates (trains per hour)
 W_SPEED = args.walk * 1000/60 # Walking speed m/minute
