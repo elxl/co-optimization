@@ -310,7 +310,7 @@ elif reg == 1:
 elif reg == 2:
     # Larger theta = more spread out (50/50); Smaller theta = back to 100/0.
     entropy_terms = []
-    n_points = 100
+    n_points = 30
 
     for od in OD_pairs:
         # Create auxiliary variables for the entropy values: f(x) = x * log(x)
@@ -321,12 +321,12 @@ elif reg == 2:
         # Generate coordinates for the PWL approximation
         # Range is from epsilon to the maximum possible demand for this OD
         max_d = max(1.0, demand_dict[od]) 
-        x_pts = np.linspace(1e-6, max_d, n_points)
-        y_pts = x_pts * np.log(x_pts)
+        x_pts = np.geomspace(1e-6, max_d, num=n_points).tolist()
+        y_pts = [p * np.log(p) for p in x_pts]
         
         # Define the PWL constraints (This is linear/MIP compatible)
-        m.addGenConstrPWL(x_a[od], ent_a, x_pts.tolist(), y_pts.tolist())
-        m.addGenConstrPWL(x_pt[od], ent_pt, x_pts.tolist(), y_pts.tolist())
+        m.addGenConstrPWL(x_a[od], ent_a, x_pts, y_pts.tolist())
+        m.addGenConstrPWL(x_pt[od], ent_pt, x_pts, y_pts.tolist())
         
         entropy_terms.append(ent_a + ent_pt)
 
