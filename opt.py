@@ -325,8 +325,8 @@ elif reg == 2:
         y_pts = [p * np.log(p) for p in x_pts]
         
         # Define the PWL constraints (This is linear/MIP compatible)
-        m.addGenConstrPWL(x_a[od], ent_a, x_pts, y_pts.tolist())
-        m.addGenConstrPWL(x_pt[od], ent_pt, x_pts, y_pts.tolist())
+        m.addGenConstrPWL(x_a[od], ent_a, x_pts, y_pts)
+        m.addGenConstrPWL(x_pt[od], ent_pt, x_pts, y_pts)
         
         entropy_terms.append(ent_a + ent_pt)
 
