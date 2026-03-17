@@ -220,13 +220,13 @@ m.params.MIPGap = args.mip
 
 # Variables
 x_ap = m.addVars(paths_df['path_id'].unique(), lb=0, name="x_path") # Flow on AMoD path
-x_a = m.addVars(OD_pairs, lb=1e-6, ub=[demand_dict[od] for od in OD_pairs], name="x_a")
+x_a = m.addVars(OD_pairs, lb=1e-6, ub=[demand_dict[od]-1e-6 for od in OD_pairs], name="x_a")
 r = m.addVars(E_a, lb=0, name="r_ij") # Rebalancing flow
 f = m.addVars(E_a, lb=0, name="f_ij") # AMOD flow
 v = m.addVars(E_a, lb=[b_map[e] for e in E_a], name="v_total") # Total volume (b + f)
 v_ratio = m.addVars(E_a, lb=0, name="v_ratio")
 v_ratio_pow = m.addVars(E_a, lb=0, name="v_ratio_pow") # Auxiliary for v^(beta+1) in BPR
-x_pt = m.addVars(OD_pairs, lb=1e-6, ub=[demand_dict[od] for od in OD_pairs], name="x_pt") # Flow on transit route
+x_pt = m.addVars(OD_pairs, lb=1e-6, ub=[demand_dict[od]-1e-6 for od in OD_pairs], name="x_pt") # Flow on transit route
 
 z = m.addVars(L, S_set, vtype=GRB.BINARY, name="z_ls") # z_ls=1 if line l has frequency s
 s_l = m.addVars(L, lb=min(S_set), name="s_l") # Frequency of line l TODO: discrete/continuous?
@@ -253,7 +253,7 @@ for e in Cap_map.keys():
     # (v/C)^5 will be around 0.03 to 7.6
     m.addGenConstrPow(v_ratio[e], v_ratio_pow[e], beta+1)
 
-# 2. FLOW CONSERVATION (Rebalancing)
+# 2. Flow conservation (Rebalancing)
 # Net change in vehicles at node v: Inflow - Outflow = Net Demand
 for node in road_nodes:
     # Vehicles arriving/departing node by rebalancing
