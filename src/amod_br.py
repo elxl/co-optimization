@@ -1,6 +1,8 @@
 import gurobipy as gp
 from gurobipy import GRB
 import numpy as np
+import matplotlib.pyplot as plt
+from tqdm import tqdm
 
 class AMoD_BestResponse:
     """
@@ -50,10 +52,7 @@ class AMoD_BestResponse:
 
         self.r = m.addVars(net['E_a'], lb=0, name="r_ij") # Rebalancing flow
         self.f = m.addVars(net['E_a'], lb=0, name="f_ij") # AMOD flow
-        self.v = m.addVars(net['E_a'], lb=[net['b_map'][e] for e in net['E_a']], name="v_total") # Total volume (b + f)
-        self.v_ratio = m.addVars(net['E_a'], lb=0, name="v_ratio")
-        self.v_ratio_pow = m.addVars(net['E_a'], lb=0, name="v_ratio_pow") # Auxiliary for v^(beta+1) in BPR
-        self.v_ratio_beta = self.m.addVars(self.net['E_a'], lb=0, name="v_ratio_beta") # Auxiliary for v^beta in BPR
+        self.f_T = m.addVars(net['E_a'], lb=0, name="f_T") # Auxiliary variable for strictly convex f * T(b+f)
 
         # PWL Auxiliary for entropy term: y = x*ln(x) - x*ln(d-x)
         self.ent_obj = m.addVars(net['OD_pairs'], lb=-GRB.INFINITY, name="entropy_term")
@@ -74,19 +73,41 @@ class AMoD_BestResponse:
                 # 4. Calculate y values
                 y_pts = [x * np.log(x) - x * np.log(d - x) for x in x_pts]
                 
-                m.addGenConstrPWL(self.x_a[od], self.ent_obj[od], x_pts, y_pts)
+                # m.addGenConstrPWL(self.x_a[od], self.ent_obj[od], x_pts, y_pts)
+                # Replace addGenConstrPWL with continuous secant inequalities
+                for i in range(len(x_pts) - 1):
+                    slope = (y_pts[i+1] - y_pts[i]) / (x_pts[i+1] - x_pts[i])
+                    intercept = y_pts[i] - slope * x_pts[i]
+                    m.addConstr(self.ent_obj[od] >= slope * self.x_a[od] + intercept)
             else:
                 m.addConstr(self.x_a[od] == 1e-6)
                 m.addConstr(self.ent_obj[od] == 0)
         # Constraints
-        # 1. Flow on road and BPR
+        # 1. Flow on road and convex epigraph for BPR
         for e in net['E_a']:
             p_on_e = net['paths_df'][(net['paths_df']['u'] == e[0]) & (net['paths_df']['v'] == e[1])]['path_id'].unique()
             m.addConstr(self.f[e] == self.r[e] + self.x_ap.sum(p_on_e))
-            m.addConstr(self.v[e] == net['b_map'][e] + self.f[e])
-            m.addConstr(self.v_ratio[e] == self.v[e] / net['Cap_map'][e])
-            m.addGenConstrPow(self.v_ratio[e], self.v_ratio_pow[e], self.args.beta + 1)
-            m.addGenConstrPow(self.v_ratio[e], self.v_ratio_beta[e], self.args.beta)
+
+            b = net['b_map'][e]
+            C = net['Cap_map'][e]
+            T0 = net['T0_map'][e]
+
+            # Convex epigraph for f*T(b+f) using pre-computed points
+            f_max = 2 * C
+            f_pts = np.linspace(0, f_max, num=25).tolist()
+
+            y_pts = []
+            for f_val in f_pts:
+                v_val = b + f_val
+                ratio = v_val / C
+                T_val = T0 * (1 + self.args.alpha * (ratio ** self.args.beta))
+                y_pts.append(f_val * T_val
+            )
+            # Continuous secant inequalities for the single convex bowl
+            for i in range(len(f_pts) - 1):
+                slope = (y_pts[i+1] - y_pts[i]) / (f_pts[i+1] - f_pts[i])
+                intercept = y_pts[i] - slope * f_pts[i]
+                m.addConstr(self.f_T[e] >= slope * self.f[e] + intercept)
 
         # 2. Demand split
         for od in net['OD_pairs']:
@@ -113,6 +134,16 @@ class AMoD_BestResponse:
         Solves the AMoD Best Response using Successive Convex Approximation.
         Returns a LOWER BOUND on the maximum profit.
         """
+
+        # ### --- TEMPORARY PLOTTING BLOCK 1: Imports & Setup --- ###
+        plt.ion() # Turn on interactive mode
+        fig, ax1 = plt.subplots(figsize=(10, 5))
+        ax2 = ax1.twinx()
+        iter_history = []
+        obj_history = []
+        diff_history = []
+        # ### --------------------------------------------------- ###
+
         # Step 0: initialize flows (using step 1 social optimum or any feasible solution)
         if f_initial is None or r_initial is None:
             f_k = {e: 0 for e in self.net['E_a']}
@@ -138,7 +169,9 @@ class AMoD_BestResponse:
         # Trust region constraints
         tr_constrs = {}
 
-        for iteration in range(max_iter):
+        # ### --- TEMPORARY PLOTTING BLOCK 2: Wrap range in tqdm --- ###
+        for iteration in tqdm(range(max_iter), desc="SCA Iterations"):
+        # ### ------------------------------------------------------ ###
             # Step 1: Calculate taylor expansion
             T_k = {}
             grad_T_k = {}
@@ -155,13 +188,7 @@ class AMoD_BestResponse:
                     grad_T_k[e] = 0
 
             # Step 2: Set strictly convex objective
-            road_time_convex = gp.quicksum(
-                # v_e * T(v_e)
-                self.net['T0_map'][e] * (self.v[e] + self.args.alpha * self.net['Cap_map'][e] * self.v_ratio_pow[e])
-                # - b_e * T(v_e)
-                - self.net['b_map'][e] * self.net['T0_map'][e] * (1 + self.args.alpha * self.v_ratio_beta[e])
-                for e in self.net['E_a']
-            )
+            road_time_convex = gp.quicksum(self.f_T[e] for e in self.net['E_a'])
             rebal_linear_surrogate = gp.quicksum(-T_k[e]*self.r[e] - (r_k[e]*grad_T_k[e])*self.f[e] for e in self.net['E_a'])
             amod_op_cost = gp.quicksum(self.args.ca * self.f[e] * (self.net['dist_map'][e] / 1000) for e in self.net['E_a'])
             
@@ -184,6 +211,9 @@ class AMoD_BestResponse:
                 
             # Solve the convex subproblem
             self.m.optimize()
+            if self.m.status != GRB.OPTIMAL:
+                print(f"SCA Iteration {iteration}: Subproblem not optimal, status code {self.m.status}")
+                break
             
             # Step 3: Check Convergence
             max_diff = 0
@@ -193,10 +223,40 @@ class AMoD_BestResponse:
                 f_k[e] = self.f[e].X
                 r_k[e] = self.r[e].X
                 
-            print(f"SCA Iteration {iteration}: Max flow change = {max_diff:.4f}")
+            # ### --- TEMPORARY PLOTTING BLOCK 3: Dynamic Plotting --- ###
+            iter_history.append(iteration)
+            obj_history.append(-self.m.ObjVal)
+            diff_history.append(max_diff)
+
+            fig.clf()
+
+            ax1 = fig.add_subplot(111)
+            ax2 = ax1.twinx()
+
+            ax1.set_xlabel('SCA Iteration')
+            ax1.set_ylabel('Surrogate Profit Lower Bound', color='tab:blue')
+            ax1.plot(iter_history, obj_history, color='tab:blue', marker='o', label='Profit')
+            ax1.tick_params(axis='y', labelcolor='tab:blue')
+
+            ax2.set_ylabel('Max Flow Change', color='tab:red')
+            ax2.plot(iter_history, diff_history, color='tab:red', marker='x', linestyle='--', label='Flow Diff')
+            ax2.tick_params(axis='y', labelcolor='tab:red')
+
+            plt.title(f"SCA Convergence Tracking")
+            fig.tight_layout()
+            plt.draw()
+            plt.pause(0.01) # Small pause to allow GUI to update
+            # ### ---------------------------------------------------- ###
+
+            tqdm.write(f"SCA Iteration {iteration}: Max flow change = {max_diff:.4f}")
             if max_diff <= tol:
-                print("SCA Converged!")
+                tqdm.write("SCA Converged!")
                 break
+                
+        # ### --- TEMPORARY PLOTTING BLOCK 4: Keep Plot Open --- ###
+        plt.ioff()
+        plt.show() # Uncomment this if you want the program to pause and wait for you to close the plot
+        # ### -------------------------------------------------- ###
                 
         # Return negative objective (which is Maximum Profit) and the flows
         return -self.m.ObjVal, f_k, r_k

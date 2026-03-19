@@ -3,7 +3,6 @@ import gzip
 import pickle
 import os
 from src.constants import C_LANE
-from opt import C_lane
 
 def load_nyc_network(args):
     demand_f = os.path.join(args.input_dir, args.demand_file)
@@ -33,7 +32,7 @@ def load_nyc_network(args):
 
     # Free-flow travel time and capacity
     map_df['T0'] = map_df['length'] / (map_df['maxspeed'] * 0.44704 * 60)
-    map_df['Capacity'] = map_df['lanes'] * C_lane
+    map_df['Capacity'] = map_df['lanes'] * C_LANE
     dist_map = map_df.set_index(['source', 'target'])['length'].to_dict()
     T0_map = map_df.set_index(['source', 'target'])['T0'].to_dict()
     Cap_map = map_df.set_index(['source', 'target'])['Capacity'].to_dict()
