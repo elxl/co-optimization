@@ -255,7 +255,8 @@ class AMoD_BestResponse:
                 
         # ### --- TEMPORARY PLOTTING BLOCK 4: Keep Plot Open --- ###
         plt.ioff()
-        plt.show() # Uncomment this if you want the program to pause and wait for you to close the plot
+        plt.savefig("sca_convergence.png", bbox_inches='tight') # Save the final plot as a file
+        # plt.show() # Uncomment this if you want the program to pause and wait for you to close the plot
         # ### -------------------------------------------------- ###
                 
         # Return negative objective (which is Maximum Profit) and the flows
