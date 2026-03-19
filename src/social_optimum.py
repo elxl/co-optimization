@@ -1,9 +1,9 @@
 import gurobipy as gp
 from gurobipy import GRB
 import numpy as np
-import pabdas as pd
+import pandas as pd
 from pricing import recover_amod_price
-from constants import C_L_UNIT, S_SET, AMOD_WAIT, BASE_LOAD_FACTOR, MPH_TO_M_PER_MIN, TRANSIT_FARE
+from src.constants import C_L_UNIT, S_SET, AMOD_WAIT, BASE_LOAD_FACTOR, MPH_TO_M_PER_MIN, TRANSIT_FARE
 
 class SocialOptimum:
     def __init__(self, args, net_data, demand_dict):
@@ -148,8 +148,8 @@ class SocialOptimum:
         Recover AMoD price and post-process solved model to get statistics.
         """
         if self.m.status != GRB.OPTIMAL:
-                    print("Model not solved to optimality. Cannot generate results.")
-                    return None
+            print("Model not solved to optimality. Cannot generate results.")
+            return None
 
         net = self.net
         args = self.args
@@ -203,7 +203,103 @@ class SocialOptimum:
         
         # Recover the prices using your pricing.py function
         # Note: Make sure to pass the transit fare properly (using your constant or parameter)
-        fare = 3.0 # Or TRANSIT_FARE if you are using constants.py
+        fare = TRANSIT_FARE
         df_results = recover_amod_price(df_results, args.vot1, fare)
         
-        return df_results        
+        return df_results
+
+    def get_summary(self):
+        net = self.net
+        args = self.args
+        
+        # 1. Transit frequency and operation cost
+        transit_summary = []
+        for l in net['L']:
+            line_passengers = sum(self.x_pt[od].X for od in net['OD_pairs'] if l in net['opt_data'][od]['gamma_odl'])
+            transit_summary.append({
+                'Line_ID': l,
+                'Frequency_vph': round(self.s_l[l].X, 2),
+                'Total_Passengers': round(line_passengers, 2),
+            })
+        
+        df_transit = pd.DataFrame(transit_summary)
+        total_transit_op_cost = sum(args.cl * self.s_l[l].X for l in net['L'])
+        avg_freq = df_transit['Frequency_vph'].mean()
+        
+        # 2. AMoD distances
+        total_rebal = sum(self.r[e].X * net['dist_map'][e] for e in net['E_a']) / 1000
+        total_pass_dist = sum(self.x_ap[p].X * sum(net['dist_map'][r.u, r.v] for r in net['paths_df'][net['paths_df']['path_id']==p].itertuples()) 
+                             for p in self.x_ap.keys() if self.x_ap[p].X > 0) / 1000
+        
+        # 3. Mode split
+        df_results = self.get_results_dataframe()
+        total_amod = df_results['AMoD_Flow'].sum()
+        total_transit = df_results['Transit_Flow'].sum()
+        total_demand = df_results['Demand'].sum()
+        
+        amod_share = (total_amod / total_demand) * 100 if total_demand > 0 else 0
+        transit_share = (total_transit / total_demand) * 100 if total_demand > 0 else 0
+        
+        # 4. Background traffic impact
+        total_bg_increase_min = 0
+        for e in net['E_a']:
+            v_final = self.v[e].X
+            t_congested = net['T0_map'][e] * (1 + args.alpha * ((v_final / net['Cap_map'][e]) ** args.beta))
+            t_baseline = net['T0_map'][e] * (1 + args.alpha * ((net['b_map'][e] / net['Cap_map'][e]) ** args.beta))
+            edge_increase = net['b_map'][e] * (t_congested - t_baseline)
+            total_bg_increase_min += edge_increase
+        
+        # 5. Calculate objective components for social cost
+        congested_time_map = {}
+        for e in net['E_a']:
+            v_total = self.v[e].X
+            ratio = v_total / net['Cap_map'][e]
+            congested_time_map[e] = net['T0_map'][e] * (1 + args.alpha * (ratio**args.beta))
+        
+        road_time_cost = sum(net['T0_map'][e] * (self.v[e].X + args.alpha * net['Cap_map'][e] * (self.v_ratio_pow[e].X)) for e in net['E_a']) - net['baseline_road_cost']
+        amod_wait = self.AMOD_WAIT * total_amod
+        transit_time_fixed = sum(self.x_pt[od].X * net['opt_data'][od]['tau_pt'] for od in net['OD_pairs'])
+        transit_walk_fixed = sum(self.x_pt[od].X * net['opt_data'][od]['walking_dist']/self.W_SPEED for od in net['OD_pairs'])
+        transit_waiting = 0.5 * 60 * sum((1/self.s_l[l].X) * self.w[od, l, s].X for (od, l, s) in self.w.keys() if self.s_l[l].X > 0)
+        amod_op_cost = sum(args.ca * self.f[u, v].X * (net['dist_map'][u, v] / 1000.0) for u, v in net['E_a'])
+        op_cost = sum(args.cl * self.s_l[l].X for l in net['L'])
+        
+        total_physical_cost = (
+            args.vot * road_time_cost + 
+            args.vot1 * (transit_time_fixed + transit_waiting + transit_walk_fixed + amod_wait) + 
+            amod_op_cost + 
+            op_cost
+        )
+        
+        # 6. Transit wait time average
+        avg_wait = df_results['Pot_Transit_Wait_min'].mean()
+        
+        # Create summary dataframe
+        run_summary = {
+            "BL": args.bl,
+            "K_l": args.cl,
+            "C_ij": args.ca,
+            # Social Cost (main metric)
+            "Total_Social_Cost": round(total_physical_cost, 2),
+            
+            # Mode Split
+            "Total_Demand": total_demand,
+            "AMoD_Flow": round(total_amod, 2),
+            "Transit_Flow": round(total_transit, 2),
+            "AMoD_Share_pct": round(amod_share, 2),
+            "Transit_Share_pct": round(transit_share, 2),
+
+            # Supply Side Metrics
+            "Avg_Transit_Freq": round(avg_freq, 2),
+            "Avg_Wait_Time_min": round(avg_wait, 2),
+            "Transit_Op_Cost": round(total_transit_op_cost, 2),
+            "AMoD_Op_Cost": round(amod_op_cost, 2),
+            
+            # Road/Congestion Metrics
+            "Rebalancing_Dist_km": round(total_rebal, 2),
+            "AMoD_Pax_Dist_km": round(total_pass_dist, 2),
+            "Rebal_Ratio": round(total_rebal / total_pass_dist, 3) if total_pass_dist > 0 else 0,
+            "BG_Delay_Total_min": round(total_bg_increase_min, 2),
+        }
+        
+        return pd.DataFrame([run_summary])

@@ -108,7 +108,7 @@ class AMoD_BestResponse:
             # Equation: Vehicles In + Pass In = Vehicles Out + Pass Out
             m.addConstr(rebal_in + pass_in == rebal_out + pass_out, name=f"flow_bal_{node}")
 
-    def solve_sca(self, max_iter=20, tol=1e-3, trust_region_delta_r=50, trust_region_delta_f=50, f_initial=None, r_initial=None):
+    def solve_sca(self, max_iter=20, tol=1e-3, trust_region_delta_r=50, trust_region_delta_f=50, f_initial=None, r_initial=None, x_a_initial=None, x_ap_initial=None):
         """
         Solves the AMoD Best Response using Successive Convex Approximation.
         Returns a LOWER BOUND on the maximum profit.
@@ -118,8 +118,22 @@ class AMoD_BestResponse:
             f_k = {e: 0 for e in self.net['E_a']}
             r_k = {e: 0 for e in self.net['E_a']}
         else:
-            f_k = f_initial
-            r_k = r_initial
+            f_k = f_initial.copy()
+            r_k = r_initial.copy()
+
+        # ---------------------------
+        # Warm start with so solution
+        # ---------------------------
+        if x_a_initial is not None:
+            for od in self.net['OD_pairs']:
+                self.x_a[od].Start = x_a_initial[od]
+        if x_ap_initial is not None:
+            for p in self.x_ap.keys():
+                self.x_ap[p].Start = x_ap_initial.get(p, 0.0)
+        if f_initial is not None:
+            for e in self.net['E_a']:
+                self.f[e].Start = f_initial[e]
+                self.r[e].Start = r_initial[e]
         
         # Trust region constraints
         tr_constrs = {}
@@ -186,3 +200,16 @@ class AMoD_BestResponse:
                 
         # Return negative objective (which is Maximum Profit) and the flows
         return -self.m.ObjVal, f_k, r_k
+    
+    def evaluate(self, amod_solution):
+        """
+        Calculate AMoD utility (objective) for a given solution. The solution must contain:
+        - 'x_a': dict of AMoD passenger flow per OD pair
+        - 'pi_a': dict of AMoD price per OD pair
+        - 'f': dict of AMoD vehicle flow per edge        
+        """
+        revenue = sum(amod_solution['pi_a'][od] * amod_solution['x_a'][od] for od in self.net['OD_pairs'])
+        op_cost = sum(self.args.ca * amod_solution['f'][e] * (self.net['dist_map'][e] / 1000.0) for e in self.net['E_a'])
+        
+        profit = revenue - op_cost
+        return profit     

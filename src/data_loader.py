@@ -2,7 +2,7 @@ import pandas as pd
 import gzip
 import pickle
 import os
-from constants import C_LANE
+from src.constants import C_LANE
 from opt import C_lane
 
 def load_nyc_network(args):
