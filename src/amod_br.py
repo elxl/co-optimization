@@ -3,6 +3,7 @@ from gurobipy import GRB
 import numpy as np
 import matplotlib.pyplot as plt
 from tqdm import tqdm
+import os
 
 class AMoD_BestResponse:
     """
@@ -136,9 +137,11 @@ class AMoD_BestResponse:
         """
 
         # ### --- TEMPORARY PLOTTING BLOCK 1: Imports & Setup --- ###
-        plt.ion() # Turn on interactive mode
-        fig, ax1 = plt.subplots(figsize=(10, 5))
-        ax2 = ax1.twinx()
+        if self.args.plot:    
+            plt.ion() # Turn on interactive mode
+            fig, ax1 = plt.subplots(figsize=(10, 5))
+            ax2 = ax1.twinx()
+
         iter_history = []
         obj_history = []
         diff_history = []
@@ -228,24 +231,25 @@ class AMoD_BestResponse:
             obj_history.append(-self.m.ObjVal)
             diff_history.append(max_diff)
 
-            fig.clf()
+            if self.args.plot:
+                fig.clf()
 
-            ax1 = fig.add_subplot(111)
-            ax2 = ax1.twinx()
+                ax1 = fig.add_subplot(111)
+                ax2 = ax1.twinx()
 
-            ax1.set_xlabel('SCA Iteration')
-            ax1.set_ylabel('Surrogate Profit Lower Bound', color='tab:blue')
-            ax1.plot(iter_history, obj_history, color='tab:blue', marker='o', label='Profit')
-            ax1.tick_params(axis='y', labelcolor='tab:blue')
+                ax1.set_xlabel('SCA Iteration')
+                ax1.set_ylabel('Surrogate Profit Lower Bound', color='tab:blue')
+                ax1.plot(iter_history, obj_history, color='tab:blue', marker='o', label='Profit')
+                ax1.tick_params(axis='y', labelcolor='tab:blue')
 
-            ax2.set_ylabel('Max Flow Change', color='tab:red')
-            ax2.plot(iter_history, diff_history, color='tab:red', marker='x', linestyle='--', label='Flow Diff')
-            ax2.tick_params(axis='y', labelcolor='tab:red')
+                ax2.set_ylabel('Max Flow Change', color='tab:red')
+                ax2.plot(iter_history, diff_history, color='tab:red', marker='x', linestyle='--', label='Flow Diff')
+                ax2.tick_params(axis='y', labelcolor='tab:red')
 
-            plt.title(f"SCA Convergence Tracking")
-            fig.tight_layout()
-            plt.draw()
-            plt.pause(0.01) # Small pause to allow GUI to update
+                plt.title(f"SCA Convergence Tracking")
+                fig.tight_layout()
+                plt.draw()
+                plt.pause(0.01) # Small pause to allow GUI to update
             # ### ---------------------------------------------------- ###
 
             tqdm.write(f"SCA Iteration {iteration}: Max flow change = {max_diff:.4f}")
@@ -254,8 +258,26 @@ class AMoD_BestResponse:
                 break
                 
         # ### --- TEMPORARY PLOTTING BLOCK 4: Keep Plot Open --- ###
-        plt.ioff()
-        plt.savefig("sca_convergence.png", bbox_inches='tight') # Save the final plot as a file
+        if self.args.plot:
+            plt.ioff()
+            plt.close()
+        fig, ax1 = plt.subplots(figsize=(10, 5))
+        ax2 = ax1.twinx()
+        ax1.set_xlabel('SCA Iteration')
+        ax1.set_ylabel('Surrogate Profit Lower Bound', color='tab:blue')
+        ax1.plot(iter_history, obj_history, color='tab:blue', marker='o', label='Profit')
+        ax1.tick_params(axis='y', labelcolor='tab:blue')
+        ax2.set_ylabel('Max Flow Change', color='tab:red')
+        ax2.plot(iter_history, diff_history, color='tab:red', marker='x', linestyle='--', label='Flow Diff')
+        ax2.tick_params(axis='y', labelcolor='tab:red')
+        plt.title(f"SCA Convergence Tracking_{self.args.bl}_{self.args.ca}_{self.args.cl}")
+        fig.tight_layout()
+
+        path = os.path.join(self.args.output_dir, "images")
+        if not os.path.exists(path):
+            os.makedirs(path)
+        plt.savefig(os.path.join(self.args.output_dir, "images", f"sca_convergence_{self.args.bl}_{self.args.ca}_{self.args.cl}.png"), bbox_inches='tight') # Save the final plot as a file
+        plt.close(fig)
         # plt.show() # Uncomment this if you want the program to pause and wait for you to close the plot
         # ### -------------------------------------------------- ###
                 
