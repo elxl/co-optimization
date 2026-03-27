@@ -172,7 +172,7 @@ def main():
         k_summary = {"bl": args.bl, "ca": args.ca, "cl": args.cl,
                     "AMoD_so": amod_so_profit, "Transit_so": transit_so_obj, "AMoD_br": profit_lb, 
                     "Transit_br": transit_br_obj, "V_a": v_a, "V_pt": v_pt, 'Total_V': v_a + v_pt, 'Social_cost':so_save_data['so_cost']}
-        df_k_summary = pd.DataFrame(k_summary)
+        df_k_summary = pd.DataFrame([k_summary])
         df_k_summary.to_csv(os.path.join(args.output_dir, f"k_summary{suffix}.csv"), index=False)
     
     else:
