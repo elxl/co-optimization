@@ -25,7 +25,7 @@ def main():
     parser.add_argument("--alpha", type=float, default=0.15, help='alpha parameter of BPR.')
     parser.add_argument("--beta", type=float, default=4, help='beta parameter of BRP.')
     parser.add_argument("--omega", type=float, default=0.0, help='Coefficient for AMoD social benefit per passenger.')
-    parser.add_argument("--reg", type=int, default=0, help='Regularization. (0: no regularization, 1: quadratic, 2: entropy)')
+    parser.add_argument("--reg", type=int, default=2, help='Regularization. (0: no regularization, 1: quadratic, 2: entropy)')
     parser.add_argument("--theta", type=float, default=0.2, help='Coefficient for regularization term (higher theta = more spread out; lower theta = closer to original objective)')
     parser.add_argument("--load_so", type=str, default=None, help='File to load the social optimum solution from instead of solving the optimization problems.')
     parser.add_argument("--plot", type=bool, default=False, help='Whether to generate convergence plot online for the AMoD Best Response SCA algorithm.')
@@ -107,10 +107,18 @@ def main():
     # ----------------------
     # AMoD best response
     # ----------------------
-    # print("\n--- 3. Solving AMoD Best Response (SCA Lower Bound) ---")
+    print("\n--- 3. Solving AMoD Best Response ---")
     amod_br = AMoD_BestResponse(args, net_data, demand, target_transit_strategy)
+
+    # Solve convex relaxation for upper bound
+    profit_ub = amod_br.solve_upper_bound_relaxation()
+    if profit_ub is not None:
+        print(f"AMoD Best Response Upper Bound (Relaxation): {profit_ub:.2f}")
+    else:
+        raise RuntimeError("AMoD Best Response relaxation failed to find a solution. Please check the model and data.")
     
     # Pass the Social Optimum flows as the starting point for the SCA algorithm
+    print("\nRunning SCA to find local optimum (lower bound)...")
     profit_lb, f_opt, r_opt = amod_br.solve_sca(
         f_initial=target_amod_strategy['f'], 
         r_initial=target_amod_strategy['r'],
@@ -119,7 +127,11 @@ def main():
     )
     
     if profit_lb is not None:
-        print(f"\n[Result] AMoD Maximum Profit (Lower Bound): {profit_lb:.2f}")
+        print(f"\nAMoD Maximum Profit (Lower Bound): {profit_lb:.2f}")
+        if profit_ub != float('inf'):
+            gap_abs = profit_ub - profit_lb
+            gap_pct = gap_abs / abs(profit_lb) * 100 if profit_lb != 0 else 0
+            print(f"[Result] Optimality Gap: ${gap_abs:.2f} ({gap_pct:.2f}%)")
     else:
         raise RuntimeError("AMoD Best Response optimization failed to find a solution. Please check the model and data.")
 
@@ -170,7 +182,7 @@ def main():
         print("==================================================")
 
         k_summary = {"bl": args.bl, "ca": args.ca, "cl": args.cl,
-                    "AMoD_so": amod_so_profit, "Transit_so": transit_so_obj, "AMoD_br": profit_lb, 
+                    "AMoD_so": amod_so_profit, "Transit_so": transit_so_obj, "AMoD_br": profit_lb, "AMoD_br_gap": gap_pct,
                     "Transit_br": transit_br_obj, "V_a": v_a, "V_pt": v_pt, 'Total_V': v_a + v_pt, 'Social_cost':so_save_data['so_cost']}
         df_k_summary = pd.DataFrame([k_summary])
         df_k_summary.to_csv(os.path.join(args.output_dir, f"k_summary{suffix}.csv"), index=False)

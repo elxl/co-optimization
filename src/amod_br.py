@@ -102,8 +102,7 @@ class AMoD_BestResponse:
                 v_val = b + f_val
                 ratio = v_val / C
                 T_val = T0 * (1 + self.args.alpha * (ratio ** self.args.beta))
-                y_pts.append(f_val * T_val
-            )
+                y_pts.append(f_val * T_val)
             # Continuous secant inequalities for the single convex bowl
             for i in range(len(f_pts) - 1):
                 slope = (y_pts[i+1] - y_pts[i]) / (f_pts[i+1] - f_pts[i])
@@ -129,6 +128,175 @@ class AMoD_BestResponse:
             
             # Equation: Vehicles In + Pass In = Vehicles Out + Pass Out
             m.addConstr(rebal_in + pass_in == rebal_out + pass_out, name=f"flow_bal_{node}")
+
+    def _compute_obbt_bounds(self):
+        """
+        Calculate strict upper bounds for rebalancing flow r_ij and total flow f_ij using Optimization-Based Bound Tightening (OBBT).
+        Maximizes r_ij and f_ij on each edge subject only to network flow conservation and max demand.
+        """
+        print("\nRunning OBBT to find tight bounds for rebalancing and total flows on edges...")
+        m_obbt = gp.Model("OBBT")
+        m_obbt.params.OutputFlag = 0
+
+        total_demand = sum(self.demand[od] for od in self.net['OD_pairs'])
+
+        # Variables
+        x_ap = m_obbt.addVars(self.net['paths_df']['path_id'].unique(), lb=0, name="x_path")
+        x_a = m_obbt.addVars(self.net['OD_pairs'], lb=1e-6, ub = [self.demand[od] for od in self.net['OD_pairs']], name="x_a")
+        r = m_obbt.addVars(self.net['E_a'], lb=0, name="r_ij")
+        f = m_obbt.addVars(self.net['E_a'], lb=0, name="f_ij")
+
+        # Constraints
+        # Flow conservation
+        for node in self.net['road_nodes']:
+            rebal_in = r.sum('*', node)
+            rebal_out = r.sum(node, '*')
+            pass_out = gp.quicksum(x_a[o, d] for o, d in self.net['OD_pairs'] if self.net['zone_to_node'].get(o) == node)
+            pass_in = gp.quicksum(x_a[o, d] for o, d in self.net['OD_pairs'] if self.net['zone_to_node'].get(d) == node)
+            m_obbt.addConstr(rebal_in + pass_in == rebal_out + pass_out)
+
+        # Path definition
+        for od in self.net['OD_pairs']:
+            rel_paths = self.net['paths_df'][(self.net['paths_df']['o_zone'] == od[0]) & (self.net['paths_df']['d_zone'] == od[1])]['path_id'].unique()
+            m_obbt.addConstr(x_a[od] == x_ap.sum(rel_paths))
+
+        for e in self.net['E_a']:
+            p_on_e = self.net['paths_df'][(self.net['paths_df']['u'] == e[0]) & (self.net['paths_df']['v'] == e[1])]['path_id'].unique()
+            m_obbt.addConstr(f[e] == r[e] + x_ap.sum(p_on_e))
+
+        total_max_profit = 0
+        total_max_revenue = 0
+
+        for od in self.net['OD_pairs']:
+            d = self.demand[od]
+            if d < 1e-3: continue
+
+            # Find the minumum physical cost to serve one passenger for this OD pair
+            rel_paths = self.net['paths_df'][(self.net['paths_df']['o_zone'] == od[0]) & (self.net['paths_df']['d_zone'] == od[1])]
+            if len(rel_paths) > 0:
+                min_dist_km = min([sum(self.net['dist_map'][r.u, r.v] for r in self.net['paths_df'][self.net['paths_df']['path_id']==p].itertuples()) for p in rel_paths['path_id'].unique()]) / 1000.0
+                c_min = self.args.ca * min_dist_km
+            else:
+                c_min = 0
+            
+            v_pt = self.v_pt_fixed[od]
+            x_vals = np.linspace(1e-5, d-1e-5, 1000)
+
+            # Calculate revenue curve
+            revenue_curve = x_vals * (v_pt - np.log(x_vals) + np.log(d - x_vals))
+            total_max_revenue += np.max(revenue_curve)
+
+            # Calculate profit curve
+            profit_curve = revenue_curve - c_min * x_vals
+            max_profit = np.max(profit_curve)
+
+            if max_profit > 0:
+                total_max_profit += max_profit
+
+        # Constraint A: rebalnacing cost cannot exceed total maximum profit
+        m_obbt.addConstr(gp.quicksum(self.args.ca * r[e] * (self.net['dist_map'][e] / 1000.0) for e in self.net['E_a']) <= total_max_profit, name="max_profit_rebal_limit")
+
+        # Constraint B: total cost cannot exceed total maximum revenue
+        m_obbt.addConstr(gp.quicksum(self.args.ca * f[e] * (self.net['dist_map'][e] / 1000.0) for e in self.net['E_a']) <= total_max_revenue, name="max_revenue_total_cost_limit")
+        
+        r_ub = {}
+        f_ub = {}
+        # Maximize r_e and f_e for each edge
+        for e in tqdm(self.net['E_a'], desc="OBBT Progress"):
+            # Maximize rebalancing flow r_e
+            m_obbt.setObjective(r[e], GRB.MAXIMIZE)
+            m_obbt.optimize()
+            if m_obbt.status == GRB.OPTIMAL:
+                r_ub[e] = r[e].X
+            else:
+                r_ub[e] = 2 * self.net['Cap_map'][e] # Fall back to a large number
+                print(f"Edge {e}: OBBT failed to find upper bound, status code {m_obbt.status}. Fall back to 2*capacity = {r_ub[e]}")
+            
+            # Maximize total AMoD flow f_e
+            m_obbt.setObjective(f[e], GRB.MAXIMIZE)
+            m_obbt.optimize()
+            if m_obbt.status == GRB.OPTIMAL:
+                f_ub[e] = f[e].X
+            else:
+                f_ub[e] = r_ub[e] + total_demand # Fallack
+                print(f"Edge {e}: OBBT failed to find upper bound for total flow, status code {m_obbt.status}. Fall back to r_ub + total_demand = {f_ub[e]}")
+        return r_ub, f_ub
+    
+    def solve_upper_bound_relaxation(self):
+        """
+        Solve AMoD best response using McCormick envelopes.
+        Returns an upper bound on the maximum profit.
+        """
+        # Step 1: get tight upper bounds for r_ij and f_ij using OBBT
+        r_ub, f_ub = self._compute_obbt_bounds()
+        print("OBBT finished. Applying bounds to get convex relaxation with McCormick envelopes...")
+
+        # Step 2: Add variables for the bilinear terms in the objective
+        T_e = self.m.addVars(self.net['E_a'], name="T_e")
+        w = self.m.addVars(self.net['E_a'], name="w_e")
+
+        # Track added constraints for cleanup later
+        mccormick_constrs = []
+        pwl_constrs = []
+
+        # Step 3: Define T_e bounds and constraints
+        T_ub = {}
+        T_lb = {}
+        for e in self.net['E_a']:
+            b = self.net['b_map'][e]
+            C = self.net['Cap_map'][e]
+            T0 = self.net['T0_map'][e]
+
+            # Lower bound on T_e: only background traffic 
+            T_lb[e] = T0 * (1 + self.args.alpha * ((b / C) ** self.args.beta))
+            # Upper bound on T_e: background + max possible flow
+            v_max = b + f_ub[e]
+            T_ub[e] = T0 * (1 + self.args.alpha * ((v_max / C) ** self.args.beta))
+
+            # PWL approximation for T_e based on f_e
+            f_pts = np.linspace(0, f_ub[e] + 1e-3, num=25).tolist()
+            T_pts = [T0 * (1 + self.args.alpha * (((b + f_val) / C) ** self.args.beta)) for f_val in f_pts]
+            gc = self.m.addGenConstrPWL(self.f[e], T_e[e], f_pts, T_pts)
+            pwl_constrs.append(gc)
+
+            # McCormick Envelope Constraints
+            # Relaxes the bilinear product w_e ≈ r_e * T_e
+            c1 = self.m.addConstr(w[e] >= self.r[e] * T_lb[e])
+            c2 = self.m.addConstr(w[e] >= r_ub[e] * T_e[e] + self.r[e] * T_ub[e] - r_ub[e] * T_ub[e])
+            c3 = self.m.addConstr(w[e] <= self.r[e] * T_ub[e])
+            c4 = self.m.addConstr(w[e] <= r_ub[e] * T_e[e] + self.r[e] * T_lb[e] - r_ub[e] * T_lb[e])
+            mccormick_constrs.extend([c1, c2, c3, c4])
+
+        # Objective
+        road_time_convex = gp.quicksum(self.f_T[e] for e in self.net['E_a'])
+        rebal_mccormick = gp.quicksum(-w[e] for e in self.net['E_a'])
+        amod_op_cost = gp.quicksum(self.args.ca * self.f[e] * (self.net['dist_map'][e] / 1000) for e in self.net['E_a'])
+
+        obj = (gp.quicksum(self.ent_obj[od] for od in self.net['OD_pairs'])
+               - gp.quicksum(self.x_a[od] * self.v_pt_fixed[od] for od in self.net['OD_pairs'])
+               + self.args.vot1 * (road_time_convex + rebal_mccormick)
+               + amod_op_cost)
+
+        self.m.setObjective(obj, GRB.MINIMIZE)
+
+        print("\nSolving Convex Relaxation (Upper Bound)...")
+        self.m.params.OutputFlag = 1
+        self.m.optimize()
+
+        if self.m.status == GRB.OPTIMAL:
+            profit_ub = -self.m.ObjVal
+        else:
+            print(f"Relaxation failed with status {self.m.status}")
+            profit_ub = None
+        
+        # Clean-up: Remove all relaxation-specific variables and constraints
+        self.m.remove(mccormick_constrs)
+        self.m.remove(pwl_constrs)
+        self.m.remove([T_e[e] for e in self.net['E_a']])
+        self.m.remove([w[e] for e in self.net['E_a']])
+        self.m.update() # Apply the removals to the model state
+
+        return profit_ub
 
     def solve_sca(self, max_iter=20, tol=1e-3, trust_region_delta_r=50, trust_region_delta_f=50, f_initial=None, r_initial=None, x_a_initial=None, x_ap_initial=None):
         """
