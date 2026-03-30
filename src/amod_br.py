@@ -214,146 +214,61 @@ class AMoD_BestResponse:
             # Equation: Vehicles In + Pass In = Vehicles Out + Pass Out
             m.addConstr(rebal_in + pass_in == rebal_out + pass_out, name=f"flow_bal_{node}")
 
-    def _compute_obbt_bounds(self):
-            """Calculates strict bounds using parallel CPU execution."""
-            edges = list(self.net['E_a'])
-            num_cores = max(1, mp.cpu_count() - 1) 
-            
-            chunk_size = int(np.ceil(len(edges) / num_cores))
-            edge_chunks = [edges[i:i + chunk_size] for i in range(0, len(edges), chunk_size)]
-            
-            print(f"\nRunning OBBT... Distributing {len(edges)} edges across {num_cores} parallel workers.")
-            
-            r_ub = {}
-            f_ub = {}
-            
-            with ProcessPoolExecutor(max_workers=num_cores) as executor:
-                futures = [
-                    executor.submit(obbt_worker, chunk, self.net, self.demand, self.args, self.v_pt_fixed)
-                    for chunk in edge_chunks
-                ]
-                
-                for future in tqdm(futures, total=len(futures), desc="OBBT Chunk Progress"):
-                    r_chunk, f_chunk = future.result()
-                    r_ub.update(r_chunk)
-                    f_ub.update(f_chunk)
-                    
-            return r_ub, f_ub
-    
     def solve_upper_bound_relaxation(self):
-            """
-            Solve AMoD best response using McCormick envelopes.
-            Returns an upper bound on the maximum profit.
-            """
-            # 1. Get tight upper bounds
-            r_ub, f_ub = self._compute_obbt_bounds()
-            print("\nOBBT finished. Applying bounds to get convex relaxation with McCormick envelopes...")
+        print("\nSolving covex relaxation with direct non-linear term bounding...")
+        # Variables
+        v = self.m.addVars(self.net['E_a'], lb=0, name="v_ij")
+        v_T = self.m.addVars(self.net['E_a'], lb=0, name="v_T")
 
-            # --- NUMERICAL FIX 1: Cap physically impossible flows to prevent explosion ---
-            for e in self.net['E_a']:
-                cap_limit = 2 * self.net['Cap_map'][e]
-                f_ub[e] = min(f_ub[e], cap_limit)
-                r_ub[e] = min(r_ub[e], f_ub[e])
+        # Constraints for defining v = f-r and the convex epigraph for f*T(b+f) using direct inequalities
+        pwl_constrs = []
+        for e in self.net['E_a']:
+            b = self.net['b_map'][e]
+            C = self.net['Cap_map'][e]
+            T0 = self.net['T0_map'][e]
 
-            # --- NUMERICAL FIX 2: Pre-calculate tight bounds for explicit definitions ---
-            T_ub = {}
-            T_lb = {}
-            for e in self.net['E_a']:
-                b = self.net['b_map'][e]
-                C = self.net['Cap_map'][e]
-                T0 = self.net['T0_map'][e]
+            p_on_e = self.net['paths_df'][(self.net['paths_df']['u'] == e[0]) & (self.net['paths_df']['v'] == e[1])]['path_id'].unique()
+            c1 = self.m.addConstr(v[e] == self.x_ap.sum(p_on_e))
+            pwl_constrs.append(c1)
 
-                T_lb[e] = T0 * (1 + self.args.alpha * ((b / C) ** self.args.beta))
-                v_max = b + f_ub[e]
-                T_ub[e] = T0 * (1 + self.args.alpha * ((v_max / C) ** self.args.beta))
+            v_max = 2 * C
+            v_pts = np.linspace(0, v_max, num=30).tolist()
+            y_pts = [v_val * T0 * (1+self.args.alpha * ((b + v_val) / C) ** self.args.beta) for v_val in v_pts]
 
-            # --- NUMERICAL FIX 3: Explicit Variable Bounds ---
-            T_e = self.m.addVars(self.net['E_a'], lb=T_lb, ub=T_ub, name="T_e_mcc")
-            w_ub = {e: r_ub[e] * T_ub[e] for e in self.net['E_a']}
-            w = self.m.addVars(self.net['E_a'], lb=0, ub=w_ub, name="w_e_mcc")
+            for i in range(len(v_pts) - 1):
+                slope = (y_pts[i+1] - y_pts[i]) / (v_pts[i+1] - v_pts[i])
+                intercept = y_pts[i] - slope * v_pts[i]
+                c_lb = self.m.addConstr(v_T[e] >= slope * v[e] + intercept)
+                pwl_constrs.append(c_lb)
 
-            mccormick_constrs = []
-            pwl_constrs = []
+        # Objective
+        road_time_convex = gp.quicksum(v_T[e] for e in self.net['E_a'])
+        amod_op_cost = gp.quicksum(self.args.ca * self.f[e] * (self.net['dist_map'][e] / 1000) for e in self.net['E_a'])
 
-            # Define PWL and McCormick Constraints
-            for e in self.net['E_a']:
-                b = self.net['b_map'][e]
-                C = self.net['Cap_map'][e]
-                T0 = self.net['T0_map'][e]
+        obj = (gp.quicksum(self.ent_obj[od] for od in self.net['OD_pairs'])
+            - gp.quicksum(self.x_a[od] * self.v_pt_fixed[od] for od in self.net['OD_pairs'])
+            + self.args.vot1 * road_time_convex
+            + amod_op_cost)
+        
+        self.m.setObjective(obj, GRB.MINIMIZE)
+        self.m.params.OutputFlag = 1
 
-                f_pts = np.linspace(0, f_ub[e] + 1e-3, num=25).tolist()
-                T_pts = [T0 * (1 + self.args.alpha * (((b + f_val) / C) ** self.args.beta)) for f_val in f_pts]
-                
-                # gc = self.m.addGenConstrPWL(self.f[e], T_e[e], f_pts, T_pts)
-                # pwl_constrs.append(gc)
-                # Floor: Continuous secant inequalities (lower bounds)
-                for i in range(len(f_pts) - 1):
-                    slope = (T_pts[i+1] - T_pts[i]) / (f_pts[i+1] - f_pts[i])
-                    intercept = T_pts[i] - slope * f_pts[i]
-                    c_lb = self.m.addConstr(T_e[e] >= slope * self.f[e] + intercept)
-                    pwl_constrs.append(c_lb)
+        self.m.optimize()
+        
+        if self.m.status == GRB.OPTIMAL:
+            profit_ub = -self.m.ObjVal
+        else:
+            print(f"Relaxation failed with status {self.m.status}")
+            profit_ub = None
 
-                # Roof: The straight chord connecting the endpoints (upper bound)
-                if f_ub[e] > 0:
-                    chord_slope = (T_ub[e] - T_lb[e]) / f_ub[e]
-                    c_ub = self.m.addConstr(T_e[e] <= T_lb[e] + chord_slope * self.f[e])
-                    pwl_constrs.append(c_ub)
-                else:
-                    c_ub = self.m.addConstr(T_e[e] <= T_lb[e])
-                    pwl_constrs.append(c_ub)
+        # Clean-up
+        self.m.remove(pwl_constrs)
+        self.m.remove([v[e] for e in self.net['E_a']])
+        self.m.remove([v_T[e] for e in self.net['E_a']])
+        self.m.params.OutputFlag = 0
+        self.m.update()
 
-                c1 = self.m.addConstr(w[e] >= self.r[e] * T_lb[e])
-                c2 = self.m.addConstr(w[e] >= r_ub[e] * T_e[e] + self.r[e] * T_ub[e] - r_ub[e] * T_ub[e])
-                c3 = self.m.addConstr(w[e] <= self.r[e] * T_ub[e])
-                c4 = self.m.addConstr(w[e] <= r_ub[e] * T_e[e] + self.r[e] * T_lb[e] - r_ub[e] * T_lb[e])
-                mccormick_constrs.extend([c1, c2, c3, c4])
-
-            # Objective Formulation
-            road_time_convex = gp.quicksum(self.f_T[e] for e in self.net['E_a'])
-            rebal_mccormick = gp.quicksum(-w[e] for e in self.net['E_a'])
-            amod_op_cost = gp.quicksum(self.args.ca * self.f[e] * (self.net['dist_map'][e] / 1000) for e in self.net['E_a'])
-
-            obj = (gp.quicksum(self.ent_obj[od] for od in self.net['OD_pairs'])
-                - gp.quicksum(self.x_a[od] * self.v_pt_fixed[od] for od in self.net['OD_pairs'])
-                + self.args.vot1 * (road_time_convex + rebal_mccormick)
-                + amod_op_cost)
-
-            self.m.setObjective(obj, GRB.MINIMIZE)
-
-            # --- NUMERICAL FIX 4: Gurobi Numeric Safeguards ---
-            prev_barhom = self.m.params.BarHomogeneous
-            prev_numfoc = self.m.params.NumericFocus
-            prev_cross = self.m.params.Crossover
-            
-            self.m.params.BarHomogeneous = 1  
-            self.m.params.NumericFocus = 2    
-            self.m.params.Crossover = 0       # Prevents hanging on PWL approximation
-            self.m.params.OutputFlag = 1
-
-            print("\nSolving Convex Relaxation (Upper Bound)...")
-            self.m.optimize()
-
-            if self.m.status == GRB.OPTIMAL:
-                profit_ub = -self.m.ObjVal
-            else:
-                print(f"Relaxation failed with status {self.m.status}")
-                profit_ub = None
-            
-            # Clean-up Phase
-            self.m.remove(mccormick_constrs)
-            self.m.remove(pwl_constrs)
-            self.m.remove([T_e[e] for e in self.net['E_a']])
-            self.m.remove([w[e] for e in self.net['E_a']])
-            
-            # Restore normal fast parameters
-            self.m.params.BarHomogeneous = prev_barhom
-            self.m.params.NumericFocus = prev_numfoc
-            self.m.params.Crossover = prev_cross
-            self.m.params.OutputFlag = 0
-            
-            self.m.update() 
-
-            return profit_ub
+        return profit_ub
 
     def solve_sca(self, max_iter=20, tol=1e-3, trust_region_delta_r=50, trust_region_delta_f=50, f_initial=None, r_initial=None, x_a_initial=None, x_ap_initial=None):
         """
@@ -417,7 +332,7 @@ class AMoD_BestResponse:
 
             # Step 2: Set strictly convex objective
             road_time_convex = gp.quicksum(self.f_T[e] for e in self.net['E_a'])
-            rebal_linear_surrogate = gp.quicksum(-T_k[e]*self.r[e] - (r_k[e]*grad_T_k[e])*self.f[e] for e in self.net['E_a'])
+            rebal_linear_surrogate = gp.quicksum(-T_k[e]*self.r[e] - (r_k[e]*grad_T_k[e])*self.f[e] + (r_k[e]*grad_T_k[e]*f_k[e]) for e in self.net['E_a'])
             amod_op_cost = gp.quicksum(self.args.ca * self.f[e] * (self.net['dist_map'][e] / 1000) for e in self.net['E_a'])
             
             obj = (gp.quicksum(self.ent_obj[od] for od in self.net['OD_pairs'])
@@ -506,8 +421,22 @@ class AMoD_BestResponse:
         # plt.show() # Uncomment this if you want the program to pause and wait for you to close the plot
         # ### -------------------------------------------------- ###
                 
-        # Return negative objective (which is Maximum Profit) and the flows
-        return -self.m.ObjVal, f_k, r_k
+        exact_road_time = 0
+        for e in self.net['E_a']:
+            v_e = f_k[e] - r_k[e]
+            ratio = (self.net['b_map'][e] + f_k[e]) / self.net['Cap_map'][e]
+            T_e = self.net['T0_map'][e] * (1 + self.args.alpha * (ratio ** self.args.beta))
+            exact_road_time += v_e * T_e
+        exact_amod_op_cost = sum(self.args.ca * f_k[e] * (self.net['dist_map'][e] / 1000) for e in self.net['E_a'])
+        exact_entropy_and_pt = 0
+        for od in self.net['OD_pairs']:
+            x_a_od = self.x_a[od].X
+            d_od = self.demand[od]
+            if x_a_od > 1e-6 and d_od > 1e-6:
+                exact_entropy_and_pt += -x_a_od * self.v_pt_fixed[od] + (x_a_od * np.log(x_a_od) - x_a_od * np.log(d_od - x_a_od))
+        true_negative_profit = exact_entropy_and_pt + self.args.vot1 * exact_road_time + exact_amod_op_cost
+        true_profit_lb = -true_negative_profit
+        return true_profit_lb, f_k, r_k
     
     def evaluate(self, amod_solution):
         """
