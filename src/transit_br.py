@@ -112,7 +112,12 @@ class TransitBestResponse:
                 right_pts = d - half_pts[::-1] 
                 x_pts = np.unique(np.concatenate((half_pts, right_pts))).tolist()
                 y_pts = [x * np.log(x) - x * np.log(d - x) for x in x_pts]
-                m.addGenConstrPWL(self.x_pt[od], self.H_x[od], x_pts, y_pts)
+                # m.addGenConstrPWL(self.x_pt[od], self.H_x[od], x_pts, y_pts)
+                for i in range(len(x_pts) - 1):
+                    slope = (y_pts[i+1] - y_pts[i]) / (x_pts[i+1] - x_pts[i])
+                    intercept = y_pts[i] - slope * x_pts[i]
+                    # This builds a purely continuous convex lower bound for H(x)
+                    m.addConstr(self.H_x[od] >= slope * self.x_pt[od] + intercept)
             else:
                 m.addConstr(self.x_pt[od] == 1e-6)
                 m.addConstr(self.H_x[od] == 0)
