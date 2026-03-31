@@ -19,10 +19,11 @@ class SocialOptimum:
         self.base_load_factor = BASE_LOAD_FACTOR
 
         self.m = gp.Model("Social_Optimum")
-        if args.reg != 2:
-            self.m.params.NonConvex = 0
-        else:
-            self.m.params.NonConvex = 1
+        # if args.reg != 2:
+        #     self.m.params.NonConvex = 0
+        # else:
+        #     self.m.params.NonConvex = 1
+        self.m.params.NonConvex = 0
         self.m.params.MIPGap = args.mip
         self.m.params.OutputFlag = 1 # Keep output on for the main SO run
 
