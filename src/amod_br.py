@@ -235,12 +235,28 @@ class AMoD_BestResponse:
             v_pts = np.linspace(0, v_max, num=30).tolist()
             y_pts = [v_val * T0 * (1+self.args.alpha * ((b + v_val) / C) ** self.args.beta) for v_val in v_pts]
 
-            for i in range(len(v_pts) - 1):
-                slope = (y_pts[i+1] - y_pts[i]) / (v_pts[i+1] - v_pts[i])
-                intercept = y_pts[i] - slope * v_pts[i]
-                c_lb = self.m.addConstr(v_T[e] >= slope * v[e] + intercept)
+            # for i in range(len(v_pts) - 1):
+            #     slope = (y_pts[i+1] - y_pts[i]) / (v_pts[i+1] - v_pts[i])
+            #     intercept = y_pts[i] - slope * v_pts[i]
+            #     c_lb = self.m.addConstr(v_T[e] >= slope * v[e] + intercept)
+            #     pwl_constrs.append(c_lb)
+            # Tangent lines for the relaxation
+            for v_val in v_pts:
+                ratio = (b + v_val) / C
+                T_val = T0 * (1 + self.args.alpha * (ratio ** self.args.beta))
+                y_val = v_val * T_val
+                
+                # Derivative of v * T(b+v)
+                if b + v_val > 0:
+                    grad = T0 * (1 + self.args.alpha * (ratio ** self.args.beta)) + \
+                           v_val * T0 * (self.args.alpha * self.args.beta / C) * (ratio ** (self.args.beta - 1))
+                else:
+                    grad = T0
+                    
+                intercept = y_val - grad * v_val
+                c_lb = self.m.addConstr(v_T[e] >= grad * v[e] + intercept)
                 pwl_constrs.append(c_lb)
-
+                
         # Objective
         road_time_convex = gp.quicksum(v_T[e] for e in self.net['E_a'])
         amod_op_cost = gp.quicksum(self.args.ca * self.f[e] * (self.net['dist_map'][e] / 1000) for e in self.net['E_a'])

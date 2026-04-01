@@ -1,6 +1,7 @@
 import argparse
 import os
 import pickle
+import time
 import pandas as pd
 from src.data_loader import load_nyc_network
 from src.social_optimum import SocialOptimum
@@ -37,6 +38,7 @@ def main():
     else:
         suffix = f"_{args.bl}_{args.ca}_{args.cl}"
 
+    t_start = time.time()
     print("--- 1. Loading Network Data ---")
     net_data, demand = load_nyc_network(args)
     print(f"Loaded {len(net_data['OD_pairs'])} OD pairs and {len(net_data['E_a'])} edges.")
@@ -186,6 +188,9 @@ def main():
                     "Transit_br": transit_br_obj, "V_a": v_a, "V_pt": v_pt, 'Total_V': v_a + v_pt, 'Social_cost':so_save_data['so_cost']}
         df_k_summary = pd.DataFrame([k_summary])
         df_k_summary.to_csv(os.path.join(args.output_dir, f"k_summary{suffix}.csv"), index=False)
+
+        t_end = time.time()
+        print(f"\nTotal runtime: {(t_end - t_start)/60:.2f} minutes")
     
     else:
         raise RuntimeError("Transit Best Response optimization failed to find a solution. Please check the model and data.")
