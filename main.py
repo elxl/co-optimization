@@ -61,14 +61,16 @@ def main():
         print("\n--- 2. Solving Target Strategy (Social Optimum) ---")
         so_model = SocialOptimum(args, net_data, demand)
         so_obj, target_transit_strategy, target_amod_strategy = so_model.solve()
+        t_so = time.time()
         
         if so_obj is not None:
             print(f"Social Optimum solved!")
             # Generate summary of so solution and save to file
             print("Recovering prices and generating mode split summary...")
             df_so_results = so_model.get_results_dataframe()
-            df_so_summary = so_model.get_summary()
-            df_so_summary.to_csv(os.path.join(args.output_dir, f"so_summary{suffix}.csv"), index=False)
+            # df_so_summary = so_model.get_summary()
+            # df_so_summary.to_csv(os.path.join(args.output_dir, f"so_summary{suffix}.csv"), index=False)
+            df_so_results.to_csv(os.path.join(args.output_dir, f"mode_split{suffix}.csv"), index=False)
 
             # ---------------------------------------------------------
             # Extract the operators' strategies at the Social Optimum
@@ -127,6 +129,7 @@ def main():
         x_a_initial=amod_so_state['x_a'],
         x_ap_initial=amod_so_state['x_ap']
     )
+    t_abr = time.time()
     
     if profit_lb is not None:
         print(f"\nAMoD Maximum Profit (Lower Bound): {profit_lb:.2f}")
@@ -155,6 +158,7 @@ def main():
     # print("\n--- 4. Solving Transit Best Response (MICP) ---")
     transit_br = TransitBestResponse(args, net_data, demand, amod_fixed_state, transit_so_state)
     transit_br_obj, transit_opt_strategy = transit_br.solve()
+    t_ptbr = time.time()
     
     if transit_br_obj is not None:
         print(f"\n[Result] Transit Maximum Deviated Objective: {transit_br_obj:.2f}")
@@ -183,14 +187,16 @@ def main():
         print(f"=> City Subsidy to Transit (V_pt): ${v_pt:.2f}")
         print("==================================================")
 
-        k_summary = {"bl": args.bl, "ca": args.ca, "cl": args.cl,
-                    "AMoD_so": amod_so_profit, "Transit_so": transit_so_obj, "AMoD_br": profit_lb, "AMoD_br_gap": gap_pct,
-                    "Transit_br": transit_br_obj, "V_a": v_a, "V_pt": v_pt, 'Total_V': v_a + v_pt, 'Social_cost':so_save_data['so_cost']}
-        df_k_summary = pd.DataFrame([k_summary])
-        df_k_summary.to_csv(os.path.join(args.output_dir, f"k_summary{suffix}.csv"), index=False)
-
         t_end = time.time()
         print(f"\nTotal runtime: {(t_end - t_start)/60:.2f} minutes")
+
+        k_summary = {"bl": args.bl, "ca": args.ca, "cl": args.cl,
+                    "AMoD_so": amod_so_profit, "Transit_so": transit_so_obj, "AMoD_br": profit_lb, "AMoD_br_gap": gap_pct,
+                    "Transit_br": transit_br_obj, "V_a": v_a, "V_pt": v_pt, 'Total_V': v_a + v_pt, 'Social_cost':so_save_data['so_cost'], 
+                    't_so': t_so - t_start, 't_amod_br': t_abr - t_so, 't_transit_br': t_ptbr - t_abr, 't_total': t_end - t_start
+                    }
+        df_k_summary = pd.DataFrame([k_summary])
+        df_k_summary.to_csv(os.path.join(args.output_dir, f"k_summary{suffix}.csv"), index=False)
     
     else:
         raise RuntimeError("Transit Best Response optimization failed to find a solution. Please check the model and data.")

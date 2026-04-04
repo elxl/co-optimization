@@ -112,13 +112,20 @@ class TransitBestResponse:
                 half_pts = np.geomspace(1e-6, d / 2.0, num=25)
                 right_pts = d - half_pts[::-1] 
                 x_pts = np.unique(np.concatenate((half_pts, right_pts))).tolist()
-                y_pts = [x * np.log(x) - x * np.log(d - x) for x in x_pts]
-                m.addGenConstrPWL(self.x_pt[od], self.H_x[od], x_pts, y_pts)
-                # for i in range(len(x_pts) - 1):
-                #     slope = (y_pts[i+1] - y_pts[i]) / (x_pts[i+1] - x_pts[i])
-                #     intercept = y_pts[i] - slope * x_pts[i]
-                #     # This builds a purely continuous convex lower bound for H(x)
-                #     m.addConstr(self.H_x[od] >= slope * self.x_pt[od] + intercept)
+                # y_pts = [x * np.log(x) - x * np.log(d - x) for x in x_pts]
+                # m.addGenConstrPWL(self.x_pt[od], self.H_x[od], x_pts, y_pts)               
+                # Tangent lines for purely continuous outer approximation
+                for x_val in x_pts:
+                    # Nudge slightly away from exact 0 and d to prevent division/log by zero
+                    x_safe = max(1e-5, min(x_val, d - 1e-5))
+                    
+                    y_val = x_safe * np.log(x_safe) - x_safe * np.log(d - x_safe)
+                    
+                    # Exact derivative for the tangent slope
+                    grad = np.log(x_safe) + 1 - np.log(d - x_safe) + (x_safe / (d - x_safe))
+                    intercept = y_val - grad * x_safe
+                    
+                    m.addConstr(self.H_x[od] >= grad * self.x_pt[od] + intercept)
             else:
                 m.addConstr(self.x_pt[od] == 1e-6)
                 m.addConstr(self.H_x[od] == 0)
