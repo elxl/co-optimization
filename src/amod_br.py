@@ -256,7 +256,7 @@ class AMoD_BestResponse:
                 intercept = y_val - grad * v_val
                 c_lb = self.m.addConstr(v_T[e] >= grad * v[e] + intercept)
                 pwl_constrs.append(c_lb)
-                
+
         # Objective
         road_time_convex = gp.quicksum(v_T[e] for e in self.net['E_a'])
         amod_op_cost = gp.quicksum(self.args.ca * self.f[e] * (self.net['dist_map'][e] / 1000) for e in self.net['E_a'])
@@ -300,6 +300,7 @@ class AMoD_BestResponse:
 
         iter_history = []
         obj_history = []
+        true_obj_history = []
         diff_history = []
         # ### --------------------------------------------------- ###
 
@@ -373,6 +374,23 @@ class AMoD_BestResponse:
             if self.m.status != GRB.OPTIMAL:
                 print(f"SCA Iteration {iteration}: Subproblem not optimal, status code {self.m.status}")
                 break
+
+            # Calculate true objective with the non-convex term
+            exact_road_time = 0
+            for e in self.net['E_a']:
+                v_e = f_k[e] - r_k[e]
+                ratio = (self.net['b_map'][e] + f_k[e]) / self.net['Cap_map'][e]
+                T_e = self.net['T0_map'][e] * (1 + self.args.alpha * (ratio ** self.args.beta))
+                exact_road_time += v_e * T_e
+            exact_amod_op_cost = sum(self.args.ca * f_k[e] * (self.net['dist_map'][e] / 1000) for e in self.net['E_a'])
+            exact_entropy_and_pt = 0
+            for od in self.net['OD_pairs']:
+                x_a_od = self.x_a[od].X
+                d_od = self.demand[od]
+                if x_a_od > 1e-6 and d_od > 1e-6:
+                    exact_entropy_and_pt += -x_a_od * self.v_pt_fixed[od] + (x_a_od * np.log(x_a_od) - x_a_od * np.log(d_od - x_a_od))
+            true_negative_profit = exact_entropy_and_pt + self.args.vot1 * exact_road_time + exact_amod_op_cost
+            true_profit = -true_negative_profit
             
             # Step 3: Check Convergence
             max_diff = 0
@@ -385,6 +403,7 @@ class AMoD_BestResponse:
             # ### --- TEMPORARY PLOTTING BLOCK 3: Dynamic Plotting --- ###
             iter_history.append(iteration)
             obj_history.append(-self.m.ObjVal)
+            true_obj_history.append(true_profit)
             diff_history.append(max_diff)
 
             if self.args.plot:
@@ -452,7 +471,15 @@ class AMoD_BestResponse:
                 exact_entropy_and_pt += -x_a_od * self.v_pt_fixed[od] + (x_a_od * np.log(x_a_od) - x_a_od * np.log(d_od - x_a_od))
         true_negative_profit = exact_entropy_and_pt + self.args.vot1 * exact_road_time + exact_amod_op_cost
         true_profit_lb = -true_negative_profit
-        return true_profit_lb, f_k, r_k
+
+        # Summarize convergence results
+        sca_converge = {
+            'iterations': iter_history,
+            'obj_profit': obj_history,
+            'true_profit': true_obj_history,
+            'max_flow_diff': diff_history
+        }
+        return true_profit_lb, f_k, r_k, sca_converge
     
     def evaluate(self, amod_solution):
         """
