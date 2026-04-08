@@ -69,6 +69,7 @@ def main():
             print("Recovering prices and generating mode split summary...")
             df_so_results = so_model.get_results_dataframe()
             df_so_summary = so_model.get_summary()
+            df_so_summary["So_solve_time"] = (t_so - t_start)/60
             df_so_summary.to_csv(os.path.join(args.output_dir, f"so_summary{suffix}.csv"), index=False)
             df_so_results.to_csv(os.path.join(args.output_dir, f"mode_split{suffix}.csv"), index=False)
 
