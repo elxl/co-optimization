@@ -262,7 +262,7 @@ class AMoD_BestResponse:
         amod_op_cost = gp.quicksum(self.args.ca * self.f[e] * (self.net['dist_map'][e] / 1000) for e in self.net['E_a'])
 
         obj = (gp.quicksum(self.ent_obj[od] for od in self.net['OD_pairs'])
-            - gp.quicksum(self.x_a[od] * self.v_pt_fixed[od] for od in self.net['OD_pairs'])
+            + gp.quicksum(self.x_a[od] * self.v_pt_fixed[od] for od in self.net['OD_pairs'])
             + self.args.vot1 * road_time_convex
             + amod_op_cost)
         
@@ -353,7 +353,7 @@ class AMoD_BestResponse:
             amod_op_cost = gp.quicksum(self.args.ca * self.f[e] * (self.net['dist_map'][e] / 1000) for e in self.net['E_a'])
             
             obj = (gp.quicksum(self.ent_obj[od] for od in self.net['OD_pairs'])
-                   - gp.quicksum(self.x_a[od] * self.v_pt_fixed[od] for od in self.net['OD_pairs'])
+                   + gp.quicksum(self.x_a[od] * self.v_pt_fixed[od] for od in self.net['OD_pairs'])
                    + self.args.vot1 * (road_time_convex + rebal_linear_surrogate)
                    + amod_op_cost)
 
