@@ -156,15 +156,19 @@ class AMoD_BestResponse:
                 # 3. Combine them and use np.unique to sort and remove the duplicated d/2 point
                 x_pts = np.unique(np.concatenate((half_pts, right_pts))).tolist()
                 
-                # 4. Calculate y values
-                y_pts = [x * np.log(x) - x * np.log(d - x) for x in x_pts]
-                
                 # m.addGenConstrPWL(self.x_a[od], self.ent_obj[od], x_pts, y_pts)
-                # Replace addGenConstrPWL with continuous secant inequalities
-                for i in range(len(x_pts) - 1):
-                    slope = (y_pts[i+1] - y_pts[i]) / (x_pts[i+1] - x_pts[i])
-                    intercept = y_pts[i] - slope * x_pts[i]
-                    m.addConstr(self.ent_obj[od] >= slope * self.x_a[od] + intercept)
+                # Replace secants with continuous tangent inequalities (underestimators)
+                for x_val in x_pts:
+                    # y = x * ln(x) - x * ln(d - x)
+                    y_val = x_val * np.log(x_val) - x_val * np.log(d - x_val)
+                    
+                    # Derivative
+                    grad = np.log(x_val) + 1 - np.log(d - x_val) + (x_val / (d - x_val))
+                    
+                    # Tangent line: y - y_val = grad * (x - x_val) => y = grad * x + intercept
+                    intercept = y_val - grad * x_val
+                    
+                    m.addConstr(self.ent_obj[od] >= grad * self.x_a[od] + intercept)
             else:
                 m.addConstr(self.x_a[od] == 1e-6)
                 m.addConstr(self.ent_obj[od] == 0)
@@ -182,17 +186,23 @@ class AMoD_BestResponse:
             f_max = 2 * C
             f_pts = np.linspace(0, f_max, num=25).tolist()
 
-            y_pts = []
+            # Continuous tangent inequalities (underestimators) for the convex bowl
             for f_val in f_pts:
-                v_val = b + f_val
-                ratio = v_val / C
+                ratio = (b + f_val) / C
                 T_val = T0 * (1 + self.args.alpha * (ratio ** self.args.beta))
-                y_pts.append(f_val * T_val)
-            # Continuous secant inequalities for the single convex bowl
-            for i in range(len(f_pts) - 1):
-                slope = (y_pts[i+1] - y_pts[i]) / (f_pts[i+1] - f_pts[i])
-                intercept = y_pts[i] - slope * f_pts[i]
-                m.addConstr(self.f_T[e] >= slope * self.f[e] + intercept)
+                y_val = f_val * T_val
+                
+                # Derivative of f * T(b+f) using the product rule
+                if b + f_val > 0:
+                    grad = T0 * (1 + self.args.alpha * (ratio ** self.args.beta)) + \
+                           f_val * T0 * (self.args.alpha * self.args.beta / C) * (ratio ** (self.args.beta - 1))
+                else:
+                    grad = T0
+                    
+                # Tangent line: y - y_val = grad * (f - f_val) => y = grad * f + intercept
+                intercept = y_val - grad * f_val
+                
+                m.addConstr(self.f_T[e] >= grad * self.f[e] + intercept)
 
         # 2. Demand split
         for od in net['OD_pairs']:
@@ -235,11 +245,7 @@ class AMoD_BestResponse:
             v_pts = np.linspace(0, v_max, num=30).tolist()
             y_pts = [v_val * T0 * (1+self.args.alpha * ((b + v_val) / C) ** self.args.beta) for v_val in v_pts]
 
-            # for i in range(len(v_pts) - 1):
-            #     slope = (y_pts[i+1] - y_pts[i]) / (v_pts[i+1] - v_pts[i])
-            #     intercept = y_pts[i] - slope * v_pts[i]
-            #     c_lb = self.m.addConstr(v_T[e] >= slope * v[e] + intercept)
-            #     pwl_constrs.append(c_lb)
+
             # Tangent lines for the relaxation
             for v_val in v_pts:
                 ratio = (b + v_val) / C
@@ -286,7 +292,7 @@ class AMoD_BestResponse:
 
         return profit_ub
 
-    def solve_sca(self, max_iter=20, tol=1e-3, trust_region_delta_r=50, trust_region_delta_f=50, f_initial=None, r_initial=None, x_a_initial=None, x_ap_initial=None):
+    def solve_sca(self, max_iter=50, tol=1e-3, trust_region_delta_r=50, trust_region_delta_f=50, f_initial=None, r_initial=None, x_a_initial=None, x_ap_initial=None):
         """
         Solves the AMoD Best Response using Successive Convex Approximation.
         Returns a LOWER BOUND on the maximum profit.
@@ -302,6 +308,7 @@ class AMoD_BestResponse:
         obj_history = []
         true_obj_history = []
         diff_history = []
+        accepted_steps = 0
         # ### --------------------------------------------------- ###
 
         # Step 0: initialize flows (using step 1 social optimum or any feasible solution)
@@ -325,6 +332,30 @@ class AMoD_BestResponse:
             for e in self.net['E_a']:
                 self.f[e].Start = f_initial[e]
                 self.r[e].Start = r_initial[e]
+
+        # Dynamic Trust Region & Helper Function ---
+        delta_f = trust_region_delta_f
+        delta_r = trust_region_delta_r
+        current_true_profit = -float('inf')
+
+        def calc_true_profit(f_dict, r_dict, x_a_dict):
+            exact_road_time = 0
+            for e in self.net['E_a']:
+                v_e = f_dict[e] - r_dict[e]
+                ratio = (self.net['b_map'][e] + f_dict[e]) / self.net['Cap_map'][e]
+                T_e = self.net['T0_map'][e] * (1 + self.args.alpha * (ratio ** self.args.beta))
+                exact_road_time += v_e * T_e
+            
+            exact_amod_op_cost = sum(self.args.ca * f_dict[e] * (self.net['dist_map'][e] / 1000) for e in self.net['E_a'])
+            
+            exact_entropy_and_pt = 0
+            for od in self.net['OD_pairs']:
+                x_a_od = x_a_dict[od]
+                d_od = self.demand[od]
+                if x_a_od > 1e-6 and d_od > 1e-6:
+                    exact_entropy_and_pt += x_a_od * self.v_pt_fixed[od] + (x_a_od * np.log(x_a_od) - x_a_od * np.log(d_od - x_a_od))
+            
+            return -(exact_entropy_and_pt + self.args.vot1 * exact_road_time + exact_amod_op_cost)
         
         # Trust region constraints
         tr_constrs = {}
@@ -364,10 +395,10 @@ class AMoD_BestResponse:
                 self.m.remove(list(tr_constrs.values()))
             tr_constrs = {}
             for e in self.net['E_a']:
-                tr_constrs[f"tr_f_up_{e}"] = self.m.addConstr(self.f[e] <= f_k[e] + trust_region_delta_f)
-                tr_constrs[f"tr_f_dn_{e}"] = self.m.addConstr(self.f[e] >= max(0, f_k[e] - trust_region_delta_f))
-                tr_constrs[f"tr_r_up_{e}"] = self.m.addConstr(self.r[e] <= r_k[e] + trust_region_delta_r)
-                tr_constrs[f"tr_r_dn_{e}"] = self.m.addConstr(self.r[e] >= max(0, r_k[e] - trust_region_delta_r))
+                tr_constrs[f"tr_f_up_{e}"] = self.m.addConstr(self.f[e] <= f_k[e] + delta_f)
+                tr_constrs[f"tr_f_dn_{e}"] = self.m.addConstr(self.f[e] >= max(0, f_k[e] - delta_f))
+                tr_constrs[f"tr_r_up_{e}"] = self.m.addConstr(self.r[e] <= r_k[e] + delta_r)
+                tr_constrs[f"tr_r_dn_{e}"] = self.m.addConstr(self.r[e] >= max(0, r_k[e] - delta_r))
                 
             # Solve the convex subproblem
             self.m.optimize()
@@ -375,36 +406,40 @@ class AMoD_BestResponse:
                 print(f"SCA Iteration {iteration}: Subproblem not optimal, status code {self.m.status}")
                 break
 
-            # Calculate true objective with the non-convex term
-            exact_road_time = 0
-            for e in self.net['E_a']:
-                v_e = f_k[e] - r_k[e]
-                ratio = (self.net['b_map'][e] + f_k[e]) / self.net['Cap_map'][e]
-                T_e = self.net['T0_map'][e] * (1 + self.args.alpha * (ratio ** self.args.beta))
-                exact_road_time += v_e * T_e
-            exact_amod_op_cost = sum(self.args.ca * f_k[e] * (self.net['dist_map'][e] / 1000) for e in self.net['E_a'])
-            exact_entropy_and_pt = 0
-            for od in self.net['OD_pairs']:
-                x_a_od = self.x_a[od].X
-                d_od = self.demand[od]
-                if x_a_od > 1e-6 and d_od > 1e-6:
-                    exact_entropy_and_pt += x_a_od * self.v_pt_fixed[od] + (x_a_od * np.log(x_a_od) - x_a_od * np.log(d_od - x_a_od))
-            true_negative_profit = exact_entropy_and_pt + self.args.vot1 * exact_road_time + exact_amod_op_cost
-            true_profit = -true_negative_profit
+            # Evaluate Candidate Step
+            f_cand = {e: self.f[e].X for e in self.net['E_a']}
+            r_cand = {e: self.r[e].X for e in self.net['E_a']}
+            x_a_cand = {od: self.x_a[od].X for od in self.net['OD_pairs']}
             
-            # Step 3: Check Convergence
-            max_diff = 0
-            for e in self.net['E_a']:
-                diff = abs(self.f[e].X - f_k[e])
-                if diff > max_diff: max_diff = diff
-                f_k[e] = self.f[e].X
-                r_k[e] = self.r[e].X
+            cand_true_profit = calc_true_profit(f_cand, r_cand, x_a_cand)
+
+            if cand_true_profit >= current_true_profit - 1e-4: # 1e-4 tolerance for numerical solver drift
+                # ACCEPT STEP
+                accepted_steps += 1
+                max_diff = max(abs(f_cand[e] - f_k[e]) for e in self.net['E_a'])
+                
+                f_k = f_cand.copy()
+                r_k = r_cand.copy()
+                current_true_profit = cand_true_profit
+                
+                tqdm.write(f"SCA Iteration {iteration}: Accepted. Max flow change = {max_diff:.4f}")
+
+                iter_history.append(accepted_steps)
+                obj_history.append(-self.m.ObjVal)
+                true_obj_history.append(current_true_profit)
+                diff_history.append(max_diff)
+                
+                if max_diff <= tol:
+                    tqdm.write("SCA Converged!")
+                    break
+            else:
+                # REJECT STEP
+                tqdm.write(f"SCA Iteration {iteration}: Rejected. True profit dropped. Shrinking TR.")
+                delta_f *= 0.5
+                delta_r *= 0.5
+                max_diff = float('inf') # Prevent convergence trigger on a rejected step    
                 
             # ### --- TEMPORARY PLOTTING BLOCK 3: Dynamic Plotting --- ###
-            iter_history.append(iteration)
-            obj_history.append(-self.m.ObjVal)
-            true_obj_history.append(true_profit)
-            diff_history.append(max_diff)
 
             if self.args.plot:
                 fig.clf()
@@ -413,8 +448,8 @@ class AMoD_BestResponse:
                 ax2 = ax1.twinx()
 
                 ax1.set_xlabel('SCA Iteration')
-                ax1.set_ylabel('Surrogate Profit Lower Bound', color='tab:blue')
-                ax1.plot(iter_history, obj_history, color='tab:blue', marker='o', label='Profit')
+                ax1.set_ylabel('True objective', color='tab:blue')
+                ax1.plot(iter_history, true_obj_history, color='tab:blue', marker='o', label='Profit')
                 ax1.tick_params(axis='y', labelcolor='tab:blue')
 
                 ax2.set_ylabel('Max Flow Change', color='tab:red')
@@ -426,11 +461,6 @@ class AMoD_BestResponse:
                 plt.draw()
                 plt.pause(0.01) # Small pause to allow GUI to update
             # ### ---------------------------------------------------- ###
-
-            tqdm.write(f"SCA Iteration {iteration}: Max flow change = {max_diff:.4f}")
-            if max_diff <= tol:
-                tqdm.write("SCA Converged!")
-                break
                 
         # ### --- TEMPORARY PLOTTING BLOCK 4: Keep Plot Open --- ###
         if self.args.plot:
@@ -439,8 +469,8 @@ class AMoD_BestResponse:
         fig, ax1 = plt.subplots(figsize=(10, 5))
         ax2 = ax1.twinx()
         ax1.set_xlabel('SCA Iteration')
-        ax1.set_ylabel('Surrogate Profit Lower Bound', color='tab:blue')
-        ax1.plot(iter_history, obj_history, color='tab:blue', marker='o', label='Profit')
+        ax1.set_ylabel('True objective', color='tab:blue')
+        ax1.plot(iter_history, true_obj_history, color='tab:blue', marker='o', label='Profit')
         ax1.tick_params(axis='y', labelcolor='tab:blue')
         ax2.set_ylabel('Max Flow Change', color='tab:red')
         ax2.plot(iter_history, diff_history, color='tab:red', marker='x', linestyle='--', label='Flow Diff')
@@ -455,22 +485,8 @@ class AMoD_BestResponse:
         plt.close(fig)
         # plt.show() # Uncomment this if you want the program to pause and wait for you to close the plot
         # ### -------------------------------------------------- ###
-                
-        exact_road_time = 0
-        for e in self.net['E_a']:
-            v_e = f_k[e] - r_k[e]
-            ratio = (self.net['b_map'][e] + f_k[e]) / self.net['Cap_map'][e]
-            T_e = self.net['T0_map'][e] * (1 + self.args.alpha * (ratio ** self.args.beta))
-            exact_road_time += v_e * T_e
-        exact_amod_op_cost = sum(self.args.ca * f_k[e] * (self.net['dist_map'][e] / 1000) for e in self.net['E_a'])
-        exact_entropy_and_pt = 0
-        for od in self.net['OD_pairs']:
-            x_a_od = self.x_a[od].X
-            d_od = self.demand[od]
-            if x_a_od > 1e-6 and d_od > 1e-6:
-                exact_entropy_and_pt += x_a_od * self.v_pt_fixed[od] + (x_a_od * np.log(x_a_od) - x_a_od * np.log(d_od - x_a_od))
-        true_negative_profit = exact_entropy_and_pt + self.args.vot1 * exact_road_time + exact_amod_op_cost
-        true_profit_lb = -true_negative_profit
+        
+        true_profit_lb = calc_true_profit(f_k, r_k, {od: self.x_a[od].X for od in self.net['OD_pairs']})
 
         # Summarize convergence results
         sca_converge = {
