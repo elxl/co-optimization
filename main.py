@@ -142,6 +142,10 @@ def main():
             gap_abs = profit_ub - profit_lb
             gap_pct = gap_abs / abs(profit_lb) * 100 if profit_lb != 0 else 0
             print(f"[Result] Optimality Gap: ${gap_abs:.2f} ({gap_pct:.2f}%)")
+            sca_converge['optimality_gap'] = gap_pct
+            # Save convergence data to file
+            with open(os.path.join(args.output_dir, f"sca_convergence{suffix}.pkl"), "wb") as f:
+                pickle.dump(sca_converge, f)
     else:
         raise RuntimeError("AMoD Best Response optimization failed to find a solution. Please check the model and data.")
 
