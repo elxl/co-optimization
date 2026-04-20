@@ -27,7 +27,7 @@ def main():
     parser.add_argument("--beta", type=float, default=4, help='beta parameter of BRP.')
     parser.add_argument("--omega", type=float, default=0.0, help='Coefficient for AMoD social benefit per passenger.')
     parser.add_argument("--reg", type=int, default=2, help='Regularization. (0: no regularization, 1: quadratic, 2: entropy)')
-    parser.add_argument("--theta", type=float, default=0.2, help='Coefficient for regularization term (higher theta = more spread out; lower theta = closer to original objective)')
+    parser.add_argument("--theta", type=float, default=0.5, help='Coefficient for regularization term (higher theta = more spread out; lower theta = closer to original objective)')
     parser.add_argument("--load_so", type=str, default=None, help='File to load the social optimum solution from instead of solving the optimization problems.')
     parser.add_argument("--plot", type=bool, default=False, help='Whether to generate convergence plot online for the AMoD Best Response SCA algorithm.')
     args = parser.parse_args()
@@ -149,68 +149,68 @@ def main():
     else:
         raise RuntimeError("AMoD Best Response optimization failed to find a solution. Please check the model and data.")
 
-    # ----------------------
-    # Transit best response
-    # ----------------------
-    # Get AMoD prices
-    if args.load_so and os.path.exists(args.load_so):
-        price_dict = so_save_data['amod_so_state']['pi_a']
-    else:
-        price_dict = df_so_results.set_index(['O', 'D'])['AMoD_Price'].to_dict()
+    # # ----------------------
+    # # Transit best response
+    # # ----------------------
+    # # Get AMoD prices
+    # if args.load_so and os.path.exists(args.load_so):
+    #     price_dict = so_save_data['amod_so_state']['pi_a']
+    # else:
+    #     price_dict = df_so_results.set_index(['O', 'D'])['AMoD_Price'].to_dict()
     
-    amod_fixed_state = {
-        'f': target_amod_strategy['f'],
-        'x_a': amod_so_state['x_a'],
-        'x_ap': amod_so_state['x_ap'],
-        'pi_a': price_dict
-    }
-    # print("\n--- 4. Solving Transit Best Response (MICP) ---")
-    t_ptbr_start = time.time()
-    transit_br = TransitBestResponse(args, net_data, demand, amod_fixed_state, transit_so_state)
-    transit_br_obj, transit_opt_strategy = transit_br.solve()
-    t_ptbr_end = time.time()
-    print(f"Transit Best Response completed in {(t_ptbr_end - t_ptbr_start)/60:.2f} minutes.")
+    # amod_fixed_state = {
+    #     'f': target_amod_strategy['f'],
+    #     'x_a': amod_so_state['x_a'],
+    #     'x_ap': amod_so_state['x_ap'],
+    #     'pi_a': price_dict
+    # }
+    # # print("\n--- 4. Solving Transit Best Response (MICP) ---")
+    # t_ptbr_start = time.time()
+    # transit_br = TransitBestResponse(args, net_data, demand, amod_fixed_state, transit_so_state)
+    # transit_br_obj, transit_opt_strategy = transit_br.solve()
+    # t_ptbr_end = time.time()
+    # print(f"Transit Best Response completed in {(t_ptbr_end - t_ptbr_start)/60:.2f} minutes.")
     
-    if transit_br_obj is not None:
-        print(f"\n[Result] Transit Maximum Deviated Objective: {transit_br_obj:.2f}")
+    # if transit_br_obj is not None:
+    #     print(f"\n[Result] Transit Maximum Deviated Objective: {transit_br_obj:.2f}")
         
-        # ---------------------------------------------------------
-        # Evaluate Target State & Calculate k-Implementation Payments
-        # ---------------------------------------------------------
-        print("\n--- 5. Evaluating k-Implementation Subsidies ---")
+    #     # ---------------------------------------------------------
+    #     # Evaluate Target State & Calculate k-Implementation Payments
+    #     # ---------------------------------------------------------
+    #     print("\n--- 5. Evaluating k-Implementation Subsidies ---")
 
-        # Evaluate the utilities of both operators at the Social Optimum state
-        amod_so_profit = amod_br.evaluate(amod_fixed_state)
-        transit_so_obj = transit_br.evaluate(transit_so_state)
+    #     # Evaluate the utilities of both operators at the Social Optimum state
+    #     amod_so_profit = amod_br.evaluate(amod_fixed_state)
+    #     transit_so_obj = transit_br.evaluate(transit_so_state)
 
-        print(f"AMoD Profit at Target Strategy: {amod_so_profit:.2f}")
-        print(f"Transit Objective at Target Strategy: {transit_so_obj:.2f}")
+    #     print(f"AMoD Profit at Target Strategy: {amod_so_profit:.2f}")
+    #     print(f"Transit Objective at Target Strategy: {transit_so_obj:.2f}")
 
-        # Calculate the final subsidies (V = Deviation Profit - Target Profit)
-        # We use max(0, gap) because if the target profit is already higher than 
-        # the deviation profit, the operator doesn't need a subsidy to stay!
-        v_a = max(0, profit_lb - amod_so_profit)
-        v_pt = max(0, transit_br_obj - transit_so_obj)
+    #     # Calculate the final subsidies (V = Deviation Profit - Target Profit)
+    #     # We use max(0, gap) because if the target profit is already higher than 
+    #     # the deviation profit, the operator doesn't need a subsidy to stay!
+    #     v_a = max(0, profit_lb - amod_so_profit)
+    #     v_pt = max(0, transit_br_obj - transit_so_obj)
         
-        print("\n==================================================")
-        print(f"=> Total Subsidy: ${v_a + v_pt:.2f}")
-        print(f"=> City Subsidy to AMoD (V_a):     ${v_a:.2f}")
-        print(f"=> City Subsidy to Transit (V_pt): ${v_pt:.2f}")
-        print("==================================================")
+    #     print("\n==================================================")
+    #     print(f"=> Total Subsidy: ${v_a + v_pt:.2f}")
+    #     print(f"=> City Subsidy to AMoD (V_a):     ${v_a:.2f}")
+    #     print(f"=> City Subsidy to Transit (V_pt): ${v_pt:.2f}")
+    #     print("==================================================")
 
-        t_end = time.time()
-        print(f"\nTotal runtime: {(t_end - t_start)/60:.2f} minutes")
+    #     t_end = time.time()
+    #     print(f"\nTotal runtime: {(t_end - t_start)/60:.2f} minutes")
 
-        k_summary = {"bl": args.bl, "ca": args.ca, "cl": args.cl,
-                    "AMoD_so": amod_so_profit, "Transit_so": transit_so_obj, "AMoD_br": profit_lb, "AMoD_br_gap": gap_pct,
-                    "Transit_br": transit_br_obj, "V_a": v_a, "V_pt": v_pt, 'Total_V': v_a + v_pt, 'Social_cost':so_save_data['so_cost'], 
-                    't_so': t_so - t_start, 't_amod_br': t_abr_start - t_abr_end, 't_transit_br': t_ptbr_start - t_ptbr_end, 't_total': t_end - t_start
-                    }
-        df_k_summary = pd.DataFrame([k_summary])
-        df_k_summary.to_csv(os.path.join(args.output_dir, f"k_summary{suffix}.csv"), index=False)
+    #     k_summary = {"bl": args.bl, "ca": args.ca, "cl": args.cl,
+    #                 "AMoD_so": amod_so_profit, "Transit_so": transit_so_obj, "AMoD_br": profit_lb, "AMoD_br_gap": gap_pct,
+    #                 "Transit_br": transit_br_obj, "V_a": v_a, "V_pt": v_pt, 'Total_V': v_a + v_pt, 'Social_cost':so_save_data['so_cost'], 
+    #                 't_so': t_so - t_start, 't_amod_br': t_abr_start - t_abr_end, 't_transit_br': t_ptbr_start - t_ptbr_end, 't_total': t_end - t_start
+    #                 }
+    #     df_k_summary = pd.DataFrame([k_summary])
+    #     df_k_summary.to_csv(os.path.join(args.output_dir, f"k_summary{suffix}.csv"), index=False)
     
-    else:
-        raise RuntimeError("Transit Best Response optimization failed to find a solution. Please check the model and data.")
+    # else:
+    #     raise RuntimeError("Transit Best Response optimization failed to find a solution. Please check the model and data.")
 
 if __name__ == "__main__":
     main()
