@@ -104,7 +104,7 @@ class AMoD_BestResponse:
         self.demand = demand_dict
 
         # Pre-calculate fixed transit utility for each OD pair
-        # V_pt = VOT_USER * (t_in_veh+t_wait+t)walk) + Fare
+        # V_pt = -VOT_USER * (t_in_veh+t_wait+t)walk) - Fare
         self.v_pt_fixed = self._calculate_fixed_transit_utility(fixed_transit_solution)
 
         # Build base model
@@ -122,7 +122,7 @@ class AMoD_BestResponse:
             walk_time = opt_data['walking_dist'] / (self.args.walk * 1000 / 60) # convert to minutes
             in_veh_time = opt_data['tau_pt']
 
-            v_pt[od] = self.args.vot1 * (in_veh_time + walk_time + wait_time) + transit_solution['fare']
+            v_pt[od] = -self.args.vot1 * (in_veh_time + walk_time + wait_time) - transit_solution['fare']
         
         return v_pt
 
@@ -388,7 +388,7 @@ class AMoD_BestResponse:
                 x_a_od = self.x_a[od].X
                 d_od = self.demand[od]
                 if x_a_od > 1e-6 and d_od > 1e-6:
-                    exact_entropy_and_pt += -x_a_od * self.v_pt_fixed[od] + (x_a_od * np.log(x_a_od) - x_a_od * np.log(d_od - x_a_od))
+                    exact_entropy_and_pt += x_a_od * self.v_pt_fixed[od] + (x_a_od * np.log(x_a_od) - x_a_od * np.log(d_od - x_a_od))
             true_negative_profit = exact_entropy_and_pt + self.args.vot1 * exact_road_time + exact_amod_op_cost
             true_profit = -true_negative_profit
             
@@ -468,7 +468,7 @@ class AMoD_BestResponse:
             x_a_od = self.x_a[od].X
             d_od = self.demand[od]
             if x_a_od > 1e-6 and d_od > 1e-6:
-                exact_entropy_and_pt += -x_a_od * self.v_pt_fixed[od] + (x_a_od * np.log(x_a_od) - x_a_od * np.log(d_od - x_a_od))
+                exact_entropy_and_pt += x_a_od * self.v_pt_fixed[od] + (x_a_od * np.log(x_a_od) - x_a_od * np.log(d_od - x_a_od))
         true_negative_profit = exact_entropy_and_pt + self.args.vot1 * exact_road_time + exact_amod_op_cost
         true_profit_lb = -true_negative_profit
 
