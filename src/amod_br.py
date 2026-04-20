@@ -292,7 +292,7 @@ class AMoD_BestResponse:
 
         return profit_ub
 
-    def solve_sca(self, max_iter=50, tol=1e-3, trust_region_delta_r=50, trust_region_delta_f=50, f_initial=None, r_initial=None, x_a_initial=None, x_ap_initial=None):
+    def solve_sca(self, max_iter=50, tol=1e-3, trust_region_delta_r=50, trust_region_delta_f=50, f_initial=None, r_initial=None, x_a_initial=None, x_ap_initial=None, min_delta=1e-4):
         """
         Solves the AMoD Best Response using Successive Convex Approximation.
         Returns a LOWER BOUND on the maximum profit.
@@ -438,6 +438,10 @@ class AMoD_BestResponse:
                 delta_f *= 0.5
                 delta_r *= 0.5
                 max_diff = float('inf') # Prevent convergence trigger on a rejected step    
+
+                if delta_f < min_delta and delta_r < min_delta:
+                    tqdm.write(f"SCA Terminated: Trust region collapsed below {min_delta}. Reached local optimum.")
+                    break
                 
             # ### --- TEMPORARY PLOTTING BLOCK 3: Dynamic Plotting --- ###
 
