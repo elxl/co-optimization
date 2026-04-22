@@ -1,7 +1,7 @@
 # --- Transit Physical Parameters ---
-C_L_UNIT = 1400             # Passengers per train capacity
+# C_L_UNIT = 1400             # Passengers per train capacity
 S_SET = [2, 3, 4, 5, 6, 12, 20] # Frequency candidates (trains per hour)
-BASE_LOAD_FACTOR = 0.6      # Base transit load factor
+BASE_LOAD_FACTOR = 0      # Base transit load factor
 
 # --- AMoD Physical Parameters ---
 C_LANE = 700                # Capacity per lane (vehicles/hr)

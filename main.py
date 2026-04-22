@@ -18,7 +18,8 @@ def main():
     parser.add_argument("--amod_map", type=str, default='on_demand/map.csv', help='Directory for amod map file')
     parser.add_argument("--bl", type=float, default=1.0, help='Background traffic level')
     parser.add_argument("--ca", type=float, default=1.0, help='AMoD operation cost per km')
-    parser.add_argument("--cl", type=float, default=100, help='Metro operation cost per line per hour')
+    parser.add_argument("--cl", type=float, default=320, help='Metro operation cost per line per hour')
+    parser.add_argument("--pt_cap", type=int, default=1400, help='Transit capacity (passengers per departure)')
     parser.add_argument("--walk", type=float, default=3.6, help='Walking speed (mph)')
     parser.add_argument("--vot", type=float, default=0.4, help='Environmental price for driving')
     parser.add_argument("--vot1", type=float, default=0.3, help='Value of time for passengers')
@@ -109,67 +110,71 @@ def main():
         else:
             raise RuntimeError("Social Optimum optimization failed to find a solution. Please check the model and data. If you have a previously solved solution, you can load it using the --load_so argument.")
 
-    # ----------------------
-    # AMoD best response
-    # ----------------------
-    print("\n--- 3. Solving AMoD Best Response ---")
-    amod_br = AMoD_BestResponse(args, net_data, demand, target_transit_strategy)
-
-    # Solve convex relaxation for upper bound
-    profit_ub = amod_br.solve_upper_bound_relaxation()
-    if profit_ub is not None:
-        print(f"AMoD Best Response Upper Bound (Relaxation): {profit_ub:.2f}")
-    else:
-        raise RuntimeError("AMoD Best Response relaxation failed to find a solution. Please check the model and data.")
-    
-    # Pass the Social Optimum flows as the starting point for the SCA algorithm
-    t_abr_start = time.time()
-    print("\nRunning SCA to find local optimum (lower bound)...")
-    profit_lb, _, _, sca_converge = amod_br.solve_sca(
-        f_initial=target_amod_strategy['f'], 
-        r_initial=target_amod_strategy['r'],
-        x_a_initial=amod_so_state['x_a'],
-        x_ap_initial=amod_so_state['x_ap']
-    )
-    t_abr_end = time.time()
-    print(f"SCA completed in {(t_abr_end - t_abr_start)/60:.2f} minutes.")
-    sca_converge['total_time'] = t_abr_end - t_abr_start
-    sca_converge['upper_bound'] = profit_ub
-    
-    if profit_lb is not None:
-        print(f"\nAMoD Maximum Profit (Lower Bound): {profit_lb:.2f}")
-        if profit_ub != float('inf'):
-            gap_abs = profit_ub - profit_lb
-            gap_pct = gap_abs / abs(profit_lb) * 100 if profit_lb != 0 else 0
-            print(f"[Result] Optimality Gap: ${gap_abs:.2f} ({gap_pct:.2f}%)")
-            sca_converge['optimality_gap'] = gap_pct
-            # Save convergence data to file
-            with open(os.path.join(args.output_dir, f"sca_convergence{suffix}.pkl"), "wb") as f:
-                pickle.dump(sca_converge, f)
-    else:
-        raise RuntimeError("AMoD Best Response optimization failed to find a solution. Please check the model and data.")
-
     # # ----------------------
-    # # Transit best response
+    # # AMoD best response
     # # ----------------------
-    # # Get AMoD prices
-    # if args.load_so and os.path.exists(args.load_so):
-    #     price_dict = so_save_data['amod_so_state']['pi_a']
+    # print("\n--- 3. Solving AMoD Best Response ---")
+    # amod_br = AMoD_BestResponse(args, net_data, demand, target_transit_strategy)
+
+    # # Solve convex relaxation for upper bound
+    # profit_ub = amod_br.solve_upper_bound_relaxation()
+    # if profit_ub is not None:
+    #     print(f"AMoD Best Response Upper Bound (Relaxation): {profit_ub:.2f}")
     # else:
-    #     price_dict = df_so_results.set_index(['O', 'D'])['AMoD_Price'].to_dict()
+    #     raise RuntimeError("AMoD Best Response relaxation failed to find a solution. Please check the model and data.")
     
-    # amod_fixed_state = {
-    #     'f': target_amod_strategy['f'],
-    #     'x_a': amod_so_state['x_a'],
-    #     'x_ap': amod_so_state['x_ap'],
-    #     'pi_a': price_dict
-    # }
-    # # print("\n--- 4. Solving Transit Best Response (MICP) ---")
-    # t_ptbr_start = time.time()
-    # transit_br = TransitBestResponse(args, net_data, demand, amod_fixed_state, transit_so_state)
-    # transit_br_obj, transit_opt_strategy = transit_br.solve()
-    # t_ptbr_end = time.time()
-    # print(f"Transit Best Response completed in {(t_ptbr_end - t_ptbr_start)/60:.2f} minutes.")
+    # # Pass the Social Optimum flows as the starting point for the SCA algorithm
+    # t_abr_start = time.time()
+    # print("\nRunning SCA to find local optimum (lower bound)...")
+    # profit_lb, _, _, sca_converge = amod_br.solve_sca(
+    #     f_initial=target_amod_strategy['f'], 
+    #     r_initial=target_amod_strategy['r'],
+    #     x_a_initial=amod_so_state['x_a'],
+    #     x_ap_initial=amod_so_state['x_ap']
+    # )
+    # t_abr_end = time.time()
+    # print(f"SCA completed in {(t_abr_end - t_abr_start)/60:.2f} minutes.")
+    # sca_converge['total_time'] = t_abr_end - t_abr_start
+    # sca_converge['upper_bound'] = profit_ub
+    
+    # if profit_lb is not None:
+    #     print(f"\nAMoD Maximum Profit (Lower Bound): {profit_lb:.2f}")
+    #     if profit_ub != float('inf'):
+    #         gap_abs = profit_ub - profit_lb
+    #         gap_pct = gap_abs / abs(profit_lb) * 100 if profit_lb != 0 else 0
+    #         print(f"[Result] Optimality Gap: ${gap_abs:.2f} ({gap_pct:.2f}%)")
+    #         sca_converge['optimality_gap'] = gap_pct
+    #         # Save convergence data to file
+    #         with open(os.path.join(args.output_dir, f"sca_convergence{suffix}.pkl"), "wb") as f:
+    #             pickle.dump(sca_converge, f)
+    # else:
+    #     raise RuntimeError("AMoD Best Response optimization failed to find a solution. Please check the model and data.")
+
+    # ----------------------
+    # Transit best response
+    # ----------------------
+    # Get AMoD prices
+    if args.load_so and os.path.exists(args.load_so):
+        price_dict = so_save_data['amod_so_state']['pi_a']
+    else:
+        price_dict = df_so_results.set_index(['O', 'D'])['AMoD_Price'].to_dict()
+    
+    amod_fixed_state = {
+        'f': target_amod_strategy['f'],
+        'x_a': amod_so_state['x_a'],
+        'x_ap': amod_so_state['x_ap'],
+        'pi_a': price_dict
+    }
+    # print("\n--- 4. Solving Transit Best Response (MICP) ---")
+    t_ptbr_start = time.time()
+    transit_br = TransitBestResponse(args, net_data, demand, amod_fixed_state, transit_so_state)
+    transit_br_obj, transit_opt_strategy, tight, gap = transit_br.solve()
+    t_ptbr_end = time.time()
+    print(f"Transit Best Response completed in {(t_ptbr_end - t_ptbr_start)/60:.2f} minutes.")
+    transit_summary = {"Tight": int(tight), "gap": gap, "time": t_ptbr_end - t_ptbr_start}
+    suffix_ptbr = f"_{args.bl}_{args.cl}_{args.pt_cap}"
+    with open(os.path.join(args.output_dir, f"transit_br_summary{suffix_ptbr}.pkl"), "wb") as f:
+        pickle.dump(transit_summary, f)
     
     # if transit_br_obj is not None:
     #     print(f"\n[Result] Transit Maximum Deviated Objective: {transit_br_obj:.2f}")

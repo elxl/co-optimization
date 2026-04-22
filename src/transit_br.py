@@ -2,7 +2,7 @@ import gurobipy as gp
 from gurobipy import GRB
 import numpy as np
 
-from src.constants import C_L_UNIT, S_SET, TRANSIT_FARE, MPH_TO_M_PER_MIN, AMOD_WAIT, BASE_LOAD_FACTOR
+from src.constants import S_SET, TRANSIT_FARE, MPH_TO_M_PER_MIN, AMOD_WAIT, BASE_LOAD_FACTOR
 
 class TransitBestResponse:
     def __init__(self, args, net_data, demand_dict, amod_so_solution, transit_so_solution):
@@ -13,6 +13,7 @@ class TransitBestResponse:
         self.transit_so = transit_so_solution
 
         self.W_SPEED = args.walk * MPH_TO_M_PER_MIN
+        self.C_l_unit = args.pt_cap
 
         # Calculate fixed AMoD utility V_a based on Social Optimum path assignments
         self.v_a = self._calculate_amod_utility(amod_so_solution)
@@ -20,6 +21,11 @@ class TransitBestResponse:
         self.m = gp.Model("Transit_BestResponse")
         self.m.params.MIPGap = args.mip
         self.m.params.NonConvex = 0
+
+        self.m.params.MIPFocus = 3     # Focus heavily on proving the bound
+        self.m.params.Cuts = 2         # Aggressive cut generation for Big-M
+        self.m.params.Method = 2       # Use the Barrier method for the root LP
+        self.m.params.Threads = 0      # Use all available CPU cores
 
         self._build_model()
 
@@ -103,17 +109,15 @@ class TransitBestResponse:
             m.addConstr(self.u[od, l, s] <= demand[od] * self.z[l, s])
             m.addConstr(self.u[od, l, s] >= self.x_pt[od] - demand[od] * (1 - self.z[l, s]))
 
-        # 3. Mirrored Geomspace PWL for Convex Entropy Term H(x) = x ln(x) - x ln(d-x)
+        # 3. Convex Entropy Term H(x) = x ln(x) - x ln(d-x)
         self.H_x = m.addVars(net['OD_pairs'], lb=-GRB.INFINITY, name="Entropy_H")
         for od in net['OD_pairs']:
             d = demand[od]
             if d > 1e-2:
                 self.x_pt[od].ub = d - 1e-6
-                half_pts = np.geomspace(1e-6, d / 2.0, num=25)
+                half_pts = np.geomspace(1e-6, d / 2.0, num=10)
                 right_pts = d - half_pts[::-1] 
-                x_pts = np.unique(np.concatenate((half_pts, right_pts))).tolist()
-                # y_pts = [x * np.log(x) - x * np.log(d - x) for x in x_pts]
-                # m.addGenConstrPWL(self.x_pt[od], self.H_x[od], x_pts, y_pts)               
+                x_pts = np.unique(np.concatenate((half_pts, right_pts))).tolist()           
                 # Tangent lines for purely continuous outer approximation
                 for x_val in x_pts:
                     # Nudge slightly away from exact 0 and d to prevent division/log by zero
@@ -151,7 +155,7 @@ class TransitBestResponse:
                 pass_on_seg = gp.quicksum(self.x_pt[od] for od in net['OD_pairs'] if (u_s, v_s, l) in net['opt_data'][od]['eta_e_od'])
                 
                 # The total flow on the segment cannot exceed the hourly capacity of the trains
-                m.addConstr(pass_on_seg <= (1 - BASE_LOAD_FACTOR) * C_L_UNIT * self.s_l[l])
+                m.addConstr(pass_on_seg <= (1 - BASE_LOAD_FACTOR) * self.C_l_unit * self.s_l[l])
 
         # 6. Objective: Maximize (Fare + Social Bonus) * ridership - Op Cost
         revenue_and_bonus = gp.quicksum((TRANSIT_FARE + self.args.omega) * self.x_pt[od] for od in net['OD_pairs'])
@@ -159,16 +163,206 @@ class TransitBestResponse:
         m.setObjective(revenue_and_bonus - op_cost, GRB.MAXIMIZE)
 
     def solve(self):
-            self.m.optimize()
-            if self.m.status == GRB.OPTIMAL:
+        self.m.optimize()
+        if self.m.status == GRB.OPTIMAL:
+            # Dual upper bound from the relaxation
+            profit_ub = self.m.ObjVal
+            freq_opt = {l: self.s_l[l].X for l in self.net['L']}
+            solver_x_pt = {od:self.x_pt[od].X for od in self.net['OD_pairs']}
+
+            # Feasibility recovery
+            tight_relaxation = True
+
+            # -----------------------------------
+            # Check if relaxation is tight
+            # -----------------------------------
+            tight_relaxation = True
+
+            for od in self.net['OD_pairs']:
+                d = self.demand[od]
+                if d <= 1e-6:
+                    continue
+
+                opt_data = self.net['opt_data'][od]
+                # Calculate the exact wait term from solver's auxiliary variables
+                wait_term_val = sum((30.0 / s) * self.u[od, l, s].X for l in opt_data['gamma_odl'] for s in S_SET)
+                walk_time = opt_data['walking_dist'] / self.W_SPEED
+                C_od = self.args.vot1 * (opt_data['tau_pt'] + walk_time) + TRANSIT_FARE
+                
+                # Evaluate the slack of the inequality constraint
+                solver_lhs = self.H_x[od].X + self.args.vot1 * wait_term_val + solver_x_pt[od] * (C_od + self.v_a[od])
+                
+                if solver_lhs < -0.1: # Numerical tolerance for tightness
+                    tight_relaxation = False
+                    break
+            # ---------------------------------------------------------
+            # Path 1: relaxation is tight
+            # ---------------------------------------------------------
+            if tight_relaxation:
+                print("\n--- Transit Best Response Results ---")
+                print("Relaxation State:            TIGHT")
+                print(f"Optimal Profit:              {profit_ub:.2f}")
+                print("Suboptimality Gap:           0.00% (Solution is strictly optimal)\n")
+                
                 br_strategy = {
-                    'frequencies': {l: self.s_l[l].X for l in self.net['L']},
-                    'fare': TRANSIT_FARE
+                    'frequencies': freq_opt, 
+                    'fare': TRANSIT_FARE, 
+                    'x_pt': solver_x_pt
                 }
-                return self.m.ObjVal, br_strategy
+                
+                # Return the Upper Bound as the absolute optimal profit
+                return profit_ub, br_strategy, True, 0
+            # ---------------------------------------------------------
+            # Path 2: relaxation is loose (repair frequencie)
+            # ---------------------------------------------------------
             else:
-                print("Transit Best Response Failed to Solve.")
-                return None, None
+                print("\n--- Transit Best Response Results ---")
+                print("Relaxation State:            LOOSE (Capacity Binding)")
+                print("Repairing frequencies to evaluate true optimality gap...")
+
+                # Calculate Exact Strict Logit Flows for the Repaired Upper Bound
+                exact_x_pt = {}
+                for od in self.net['OD_pairs']:
+                    d = self.demand[od]
+                    if d <= 1e-6:
+                        exact_x_pt[od] = 0.0
+                        continue
+                        
+                    opt_data = self.net['opt_data'][od]
+                    valid_path = True
+                    true_wait_time = 0
+                    for l in opt_data['gamma_odl']:
+                        if freq_opt[l] > 1e-6:
+                            true_wait_time += 30.0 / freq_opt[l]
+                        else:
+                            valid_path = False; break
+                    
+                    if not valid_path:
+                        exact_x_pt[od] = 0.0
+                        continue
+                    
+                    walk_time = opt_data['walking_dist'] / self.W_SPEED
+                    v_pt = -self.args.vot1 * (true_wait_time + opt_data['tau_pt'] + walk_time) - TRANSIT_FARE
+                    exponent = self.v_a[od] - v_pt
+                    
+                    if exponent > 500: exact_x_pt[od] = 0.0
+                    elif exponent < -500: exact_x_pt[od] = d
+                    else: exact_x_pt[od] = d / (1.0 + np.exp(exponent))
+                
+                # Evaluate Repaired Upper Bound (Removes Tangent Error!)
+                profit_repaired_ub = self.evaluate({
+                    'frequencies': freq_opt, 
+                    'fare': TRANSIT_FARE, 
+                    'x_pt': exact_x_pt 
+                })
+
+                feasible_freq = freq_opt.copy()
+                final_x_pt = {}
+                sorted_S = sorted(list(S_SET))
+                recovery_iterations = 0
+            
+                while True:
+                    recovery_iterations += 1
+
+                    # Exact non-linear logit demand under current frequencies
+                    for od in self.net['OD_pairs']:
+                        d = self.demand[od]
+                        if d <= 1e-6:
+                            final_x_pt[od] = 0.0
+                            continue
+                        
+                        opt_data = self.net['opt_data'][od]
+                        valid_path = True
+                        true_wait_time = 0
+                        for l in opt_data['gamma_odl']:
+                            if feasible_freq[l] > 1e-6:
+                                true_wait_time += 30.0/feasible_freq[l]
+                            else:
+                                valid_path = False
+                                break
+                        if not valid_path:
+                            final_x_pt[od] = 0.0
+                            continue
+                        
+                        walk_time = opt_data['walking_dist'] / self.W_SPEED
+                        fixed_time = opt_data['tau_pt'] + walk_time
+                        v_pt = -self.args.vot1 * (true_wait_time + fixed_time) - TRANSIT_FARE
+                        v_a = self.v_a[od]
+
+                        exponent = v_a - v_pt
+                        if exponent > 500: final_x_pt[od] = 0
+                        elif exponent < -500: final_x_pt[od] = d
+                        else: final_x_pt[od] = d / (1 + np.exp(exponent))
+
+                    # Check for capacity violations
+                    violated_lines = set()
+                    for l in self.net['L']:
+                        if feasible_freq[l] < 1e-6: continue
+
+                        for u_s, v_s in self.net['lines_dict'][l]:
+                            ods_on_seg = [od for od in self.net['OD_pairs'] if (u_s, v_s, l) in self.net['opt_data'][od]['eta_e_od']]
+                            pass_on_seg = sum(final_x_pt[od] for od in ods_on_seg)
+                            seg_cap = (1- BASE_LOAD_FACTOR) * self.C_l_unit * feasible_freq[l]
+
+                            if pass_on_seg > seg_cap + 1e-4:
+                                violated_lines.add(l)
+                    if not violated_lines:
+                        print(f"Feasibility Recovered in {recovery_iterations} iterations.")
+                        break
+
+                    # Increase frequencies for violated lines
+                    upgraded_any = False
+                    for l in violated_lines:
+                        current_s = feasible_freq[l]
+                        larger_s = [s for s in sorted_S if s > current_s]
+                        if larger_s:
+                            feasible_freq[l] = larger_s[0]
+                            upgraded_any = True
+                    
+                    if not upgraded_any:
+                        print("Warning: Max frequency reached. Applying strict proportional truncation to maxed-out lines.")
+                        # Store the tightest bottleneck scale factor for each OD pair
+                        od_scale_factors = {od: 1.0 for od in self.net['OD_pairs']}
+                        
+                        for l in violated_lines:
+                            for u_s, v_s in self.net['lines_dict'][l]:
+                                ods_on_seg = [od for od in self.net['OD_pairs'] if (u_s, v_s, l) in self.net['opt_data'][od]['eta_e_od']]
+                                pass_on_seg = sum(final_x_pt[od] for od in ods_on_seg)
+                                seg_cap = (1 - BASE_LOAD_FACTOR) * self.C_l_unit * feasible_freq[l]
+                                
+                                if pass_on_seg > seg_cap + 1e-4:
+                                    scale_factor = seg_cap / pass_on_seg
+                                    # Update the OD pair with the most restrictive bottleneck it encounters
+                                    for od in ods_on_seg:
+                                        od_scale_factors[od] = min(od_scale_factors[od], scale_factor)
+                        
+                        # Apply the worst-case scaling uniformly
+                        for od in self.net['OD_pairs']:
+                            if od_scale_factors[od] < 1.0:
+                                final_x_pt[od] *= od_scale_factors[od]
+                        break
+                
+                # Evaluate feasible primal lower bound
+                br_strategy = {
+                    'frequencies': feasible_freq, 
+                    'fare': TRANSIT_FARE, 
+                    'x_pt': final_x_pt
+                }
+                profit_lb = self.evaluate(br_strategy)
+
+                # Print Final Gap Summary
+                print(f"Repaired Logit Upper Bound:  {profit_repaired_ub:.2f}")
+                print(f"Primal Lower Bound (True):   {profit_lb:.2f}")
+                
+                gap = ((profit_repaired_ub - profit_lb) / abs(profit_repaired_ub)) * 100 if profit_repaired_ub != 0 else 0
+                print(f"Suboptimality Gap:           {gap:.2f}%\n")
+                
+                # Returns the tight_relaxation flag as requested!
+                return profit_lb, br_strategy, False, gap
+
+        else:
+            print("Transit Best Response Failed to Solve.")
+            return None, None, False, None
             
     def evaluate(self, transit_solution):
         """

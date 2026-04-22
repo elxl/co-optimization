@@ -3,7 +3,7 @@ from gurobipy import GRB
 import numpy as np
 import pandas as pd
 from pricing import recover_amod_price
-from src.constants import C_L_UNIT, S_SET, AMOD_WAIT, BASE_LOAD_FACTOR, MPH_TO_M_PER_MIN, TRANSIT_FARE
+from src.constants import S_SET, AMOD_WAIT, BASE_LOAD_FACTOR, MPH_TO_M_PER_MIN, TRANSIT_FARE
 
 class SocialOptimum:
     def __init__(self, args, net_data, demand_dict):
@@ -12,7 +12,7 @@ class SocialOptimum:
         self.demand = demand_dict
         
         # Hardcoded parameters from original script
-        self.C_l_unit = C_L_UNIT
+        self.C_l_unit = args.pt_cap
         self.S_set = S_SET
         self.W_SPEED = args.walk * MPH_TO_M_PER_MIN
         self.AMOD_WAIT = AMOD_WAIT
@@ -261,7 +261,7 @@ class SocialOptimum:
         amod_wait = self.AMOD_WAIT * total_amod
         transit_time_fixed = sum(self.x_pt[od].X * net['opt_data'][od]['tau_pt'] for od in net['OD_pairs'])
         transit_walk_fixed = sum(self.x_pt[od].X * net['opt_data'][od]['walking_dist']/self.W_SPEED for od in net['OD_pairs'])
-        transit_waiting = 0.5 * 60 * sum((1/self.s_l[l].X) * self.w[od, l, s].X for (od, l, s) in self.w.keys() if self.s_l[l].X > 0)
+        transit_waiting = 0.5 * 60 * sum((1/s) * self.w[od, l, s].X for (od, l, s) in self.w.keys())
         amod_op_cost = sum(args.ca * self.f[u, v].X * (net['dist_map'][u, v] / 1000.0) for u, v in net['E_a'])
         op_cost = sum(args.cl * self.s_l[l].X for l in net['L'])
         
