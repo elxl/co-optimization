@@ -7,6 +7,7 @@ from src.data_loader import load_nyc_network
 from src.social_optimum import SocialOptimum
 from src.amod_br import AMoD_BestResponse
 from src.transit_br import TransitBestResponse
+from src.constants import BASE_LOAD_FACTOR
 
 def main():
     parser = argparse.ArgumentParser(description="Multimodal Game Theory Pipeline")
@@ -171,10 +172,29 @@ def main():
     transit_br_obj, transit_opt_strategy, tight, gap = transit_br.solve()
     t_ptbr_end = time.time()
     print(f"Transit Best Response completed in {(t_ptbr_end - t_ptbr_start)/60:.2f} minutes.")
+
     transit_summary = {"Tight": int(tight), "gap": gap, "time": t_ptbr_end - t_ptbr_start}
     suffix_ptbr = f"_{args.bl}_{args.cl}_{args.pt_cap}"
     with open(os.path.join(args.output_dir, f"transit_br_summary{suffix_ptbr}.pkl"), "wb") as f:
         pickle.dump(transit_summary, f)
+
+    transit_summary = []
+
+    for l in net_data['L']:
+        # Sum transit flow for all OD pairs that use this line l
+        # We check if l is in the 'gamma_odl' list for that OD pair
+        line_passengers = sum(transit_opt_strategy['x_pt'][od] for od in net_data['OD_pairs'] if l in net_data['opt_data'][od]['gamma_odl'])
+        
+        transit_summary.append({
+            'Line_ID': l,
+            'Frequency_vph': round(transit_opt_strategy['frequencies'][l], 2),
+            'Total_Passengers': round(line_passengers, 2),
+            'Load_Factor': BASE_LOAD_FACTOR + round(line_passengers / (args.cl * transit_opt_strategy['frequencies'][l]), 3) if transit_opt_strategy['frequencies'][l] > 0 else BASE_LOAD_FACTOR
+        })
+
+    # Create DataFrame and save to CSV
+    df_transit = pd.DataFrame(transit_summary)
+    df_transit.to_csv(os.path.join(args.output_dir, f"transit_line_usage{suffix_ptbr}.csv"),index=False)
     
     # if transit_br_obj is not None:
     #     print(f"\n[Result] Transit Maximum Deviated Objective: {transit_br_obj:.2f}")
