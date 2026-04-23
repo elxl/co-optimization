@@ -181,16 +181,27 @@ def main():
     transit_summary = []
 
     for l in net_data['L']:
-        # Sum transit flow for all OD pairs that use this line l
-        # We check if l is in the 'gamma_odl' list for that OD pair
-        line_passengers = sum(transit_opt_strategy['x_pt'][od] for od in net_data['OD_pairs'] if l in net_data['opt_data'][od]['gamma_odl'])
+        segments = net_data['lines_dict'][l]
         
-        transit_summary.append({
-            'Line_ID': l,
-            'Frequency_vph': round(transit_opt_strategy['frequencies'][l], 2),
-            'Total_Passengers': round(line_passengers, 2),
-            'Load_Factor': BASE_LOAD_FACTOR + round(line_passengers / (args.cl * transit_opt_strategy['frequencies'][l]), 3) if transit_opt_strategy['frequencies'][l] > 0 else BASE_LOAD_FACTOR
-        })
+        for u_s, v_s in segments:
+            # Sum passengers ONLY on this segment (not all passengers using the line)
+            segment_passengers = sum(
+                transit_opt_strategy['x_pt'][od] 
+                for od in net_data['OD_pairs'] 
+                if (u_s, v_s, l) in net_data['opt_data'][od]['eta_e_od']
+            )
+            
+            freq = transit_opt_strategy['frequencies'][l]
+            capacity = args.pt_cap * freq if freq > 0 else 0
+            load_factor = BASE_LOAD_FACTOR + (segment_passengers / capacity) if capacity > 0 else BASE_LOAD_FACTOR
+            
+            transit_summary.append({
+                'Line_ID': l,
+                'Segment': f"({u_s}, {v_s})",
+                'Frequency_vph': round(freq, 2),
+                'Segment_Passengers': round(segment_passengers, 2),
+                'Load_Factor': round(load_factor, 3)
+            })
 
     # Create DataFrame and save to CSV
     df_transit = pd.DataFrame(transit_summary)

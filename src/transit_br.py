@@ -192,7 +192,7 @@ class TransitBestResponse:
                 # Evaluate the slack of the inequality constraint
                 solver_lhs = self.H_x[od].X + self.args.vot1 * wait_term_val + solver_x_pt[od] * (C_od + self.v_a[od])
                 
-                if solver_lhs < -0.01: # Numerical tolerance for tightness
+                if solver_lhs < -1e-3: # Numerical tolerance for tightness
                     tight_relaxation = False
                     break
             # ---------------------------------------------------------
