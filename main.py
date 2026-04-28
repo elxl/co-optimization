@@ -69,16 +69,17 @@ def main():
             print(f"Social Optimum solved!")
             # Generate summary of so solution and save to file
             print("Recovering prices and generating mode split summary...")
-            df_so_results = so_model.get_results_dataframe()
             df_so_summary = so_model.get_summary()
             df_so_summary["So_solve_time"] = (t_so - t_start)/60
             df_so_summary.to_csv(os.path.join(args.output_dir, f"so_summary{suffix}.csv"), index=False)
-            df_so_results.to_csv(os.path.join(args.output_dir, f"mode_split{suffix}.csv"), index=False)
 
             # ---------------------------------------------------------
             # Extract the operators' strategies at the Social Optimum
             # ---------------------------------------------------------
             price_dict = df_so_results.set_index(['O', 'D'])['AMoD_Price'].to_dict()
+            df_so_results = so_model.get_results_dataframe(price_dict)
+            df_so_results.to_csv(os.path.join(args.output_dir, f"mode_split{suffix}.csv"), index=False)
+
             amod_so_state = {
                 'r': target_amod_strategy['r'],
                 'f': target_amod_strategy['f'],
@@ -111,45 +112,45 @@ def main():
         else:
             raise RuntimeError("Social Optimum optimization failed to find a solution. Please check the model and data. If you have a previously solved solution, you can load it using the --load_so argument.")
 
-    # # ----------------------
-    # # AMoD best response
-    # # ----------------------
-    # print("\n--- 3. Solving AMoD Best Response ---")
-    # amod_br = AMoD_BestResponse(args, net_data, demand, target_transit_strategy)
+    # ----------------------
+    # AMoD best response
+    # ----------------------
+    print("\n--- 3. Solving AMoD Best Response ---")
+    amod_br = AMoD_BestResponse(args, net_data, demand, target_transit_strategy)
 
-    # # Solve convex relaxation for upper bound
-    # profit_ub = amod_br.solve_upper_bound_relaxation()
-    # if profit_ub is not None:
-    #     print(f"AMoD Best Response Upper Bound (Relaxation): {profit_ub:.2f}")
-    # else:
-    #     raise RuntimeError("AMoD Best Response relaxation failed to find a solution. Please check the model and data.")
+    # Solve convex relaxation for upper bound
+    profit_ub = amod_br.solve_upper_bound_relaxation()
+    if profit_ub is not None:
+        print(f"AMoD Best Response Upper Bound (Relaxation): {profit_ub:.2f}")
+    else:
+        raise RuntimeError("AMoD Best Response relaxation failed to find a solution. Please check the model and data.")
     
-    # # Pass the Social Optimum flows as the starting point for the SCA algorithm
-    # t_abr_start = time.time()
-    # print("\nRunning SCA to find local optimum (lower bound)...")
-    # profit_lb, _, _, sca_converge = amod_br.solve_sca(
-    #     f_initial=target_amod_strategy['f'], 
-    #     r_initial=target_amod_strategy['r'],
-    #     x_a_initial=amod_so_state['x_a'],
-    #     x_ap_initial=amod_so_state['x_ap']
-    # )
-    # t_abr_end = time.time()
-    # print(f"SCA completed in {(t_abr_end - t_abr_start)/60:.2f} minutes.")
-    # sca_converge['total_time'] = t_abr_end - t_abr_start
-    # sca_converge['upper_bound'] = profit_ub
+    # Pass the Social Optimum flows as the starting point for the SCA algorithm
+    t_abr_start = time.time()
+    print("\nRunning SCA to find local optimum (lower bound)...")
+    profit_lb, _, _, sca_converge = amod_br.solve_sca(
+        f_initial=target_amod_strategy['f'], 
+        r_initial=target_amod_strategy['r'],
+        x_a_initial=amod_so_state['x_a'],
+        x_ap_initial=amod_so_state['x_ap']
+    )
+    t_abr_end = time.time()
+    print(f"SCA completed in {(t_abr_end - t_abr_start)/60:.2f} minutes.")
+    sca_converge['total_time'] = t_abr_end - t_abr_start
+    sca_converge['upper_bound'] = profit_ub
     
-    # if profit_lb is not None:
-    #     print(f"\nAMoD Maximum Profit (Lower Bound): {profit_lb:.2f}")
-    #     if profit_ub != float('inf'):
-    #         gap_abs = profit_ub - profit_lb
-    #         gap_pct = gap_abs / abs(profit_lb) * 100 if profit_lb != 0 else 0
-    #         print(f"[Result] Optimality Gap: ${gap_abs:.2f} ({gap_pct:.2f}%)")
-    #         sca_converge['optimality_gap'] = gap_pct
-    #         # Save convergence data to file
-    #         with open(os.path.join(args.output_dir, f"sca_convergence{suffix}.pkl"), "wb") as f:
-    #             pickle.dump(sca_converge, f)
-    # else:
-    #     raise RuntimeError("AMoD Best Response optimization failed to find a solution. Please check the model and data.")
+    if profit_lb is not None:
+        print(f"\nAMoD Maximum Profit (Lower Bound): {profit_lb:.2f}")
+        if profit_ub != float('inf'):
+            gap_abs = profit_ub - profit_lb
+            gap_pct = gap_abs / abs(profit_lb) * 100 if profit_lb != 0 else 0
+            print(f"[Result] Optimality Gap: ${gap_abs:.2f} ({gap_pct:.2f}%)")
+            sca_converge['optimality_gap'] = gap_pct
+            # Save convergence data to file
+            with open(os.path.join(args.output_dir, f"sca_convergence{suffix}.pkl"), "wb") as f:
+                pickle.dump(sca_converge, f)
+    else:
+        raise RuntimeError("AMoD Best Response optimization failed to find a solution. Please check the model and data.")
 
     # ----------------------
     # Transit best response
@@ -174,7 +175,7 @@ def main():
     print(f"Transit Best Response completed in {(t_ptbr_end - t_ptbr_start)/60:.2f} minutes.")
 
     transit_summary = {"Tight": int(tight), "gap": gap, "time": t_ptbr_end - t_ptbr_start}
-    suffix_ptbr = f"_{args.bl}_{args.cl}_{args.pt_cap}"
+    suffix_ptbr = f"_{args.bl}_{args.ca}_{args.cl}_{args.pt_cap}"
     with open(os.path.join(args.output_dir, f"transit_br_summary{suffix_ptbr}.pkl"), "wb") as f:
         pickle.dump(transit_summary, f)
 
@@ -207,46 +208,46 @@ def main():
     df_transit = pd.DataFrame(transit_summary)
     df_transit.to_csv(os.path.join(args.output_dir, f"transit_line_usage{suffix_ptbr}.csv"),index=False)
     
-    # if transit_br_obj is not None:
-    #     print(f"\n[Result] Transit Maximum Deviated Objective: {transit_br_obj:.2f}")
+    if transit_br_obj is not None:
+        print(f"\n[Result] Transit Maximum Deviated Objective: {transit_br_obj:.2f}")
         
-    #     # ---------------------------------------------------------
-    #     # Evaluate Target State & Calculate k-Implementation Payments
-    #     # ---------------------------------------------------------
-    #     print("\n--- 5. Evaluating k-Implementation Subsidies ---")
+        # ---------------------------------------------------------
+        # Evaluate Target State & Calculate k-Implementation Payments
+        # ---------------------------------------------------------
+        print("\n--- 5. Evaluating k-Implementation Subsidies ---")
 
-    #     # Evaluate the utilities of both operators at the Social Optimum state
-    #     amod_so_profit = amod_br.evaluate(amod_fixed_state)
-    #     transit_so_obj = transit_br.evaluate(transit_so_state)
+        # Evaluate the utilities of both operators at the Social Optimum state
+        amod_so_profit = amod_br.evaluate(amod_fixed_state)
+        transit_so_obj = transit_br.evaluate(transit_so_state)
 
-    #     print(f"AMoD Profit at Target Strategy: {amod_so_profit:.2f}")
-    #     print(f"Transit Objective at Target Strategy: {transit_so_obj:.2f}")
+        print(f"AMoD Profit at Target Strategy: {amod_so_profit:.2f}")
+        print(f"Transit Objective at Target Strategy: {transit_so_obj:.2f}")
 
-    #     # Calculate the final subsidies (V = Deviation Profit - Target Profit)
-    #     # We use max(0, gap) because if the target profit is already higher than 
-    #     # the deviation profit, the operator doesn't need a subsidy to stay!
-    #     v_a = max(0, profit_lb - amod_so_profit)
-    #     v_pt = max(0, transit_br_obj - transit_so_obj)
+        # Calculate the final subsidies (V = Deviation Profit - Target Profit)
+        # We use max(0, gap) because if the target profit is already higher than 
+        # the deviation profit, the operator doesn't need a subsidy to stay!
+        v_a = max(0, profit_lb - amod_so_profit)
+        v_pt = max(0, transit_br_obj - transit_so_obj)
         
-    #     print("\n==================================================")
-    #     print(f"=> Total Subsidy: ${v_a + v_pt:.2f}")
-    #     print(f"=> City Subsidy to AMoD (V_a):     ${v_a:.2f}")
-    #     print(f"=> City Subsidy to Transit (V_pt): ${v_pt:.2f}")
-    #     print("==================================================")
+        print("\n==================================================")
+        print(f"=> Total Subsidy: ${v_a + v_pt:.2f}")
+        print(f"=> City Subsidy to AMoD (V_a):     ${v_a:.2f}")
+        print(f"=> City Subsidy to Transit (V_pt): ${v_pt:.2f}")
+        print("==================================================")
 
-    #     t_end = time.time()
-    #     print(f"\nTotal runtime: {(t_end - t_start)/60:.2f} minutes")
+        t_end = time.time()
+        print(f"\nTotal runtime: {(t_end - t_start)/60:.2f} minutes")
 
-    #     k_summary = {"bl": args.bl, "ca": args.ca, "cl": args.cl,
-    #                 "AMoD_so": amod_so_profit, "Transit_so": transit_so_obj, "AMoD_br": profit_lb, "AMoD_br_gap": gap_pct,
-    #                 "Transit_br": transit_br_obj, "V_a": v_a, "V_pt": v_pt, 'Total_V': v_a + v_pt, 'Social_cost':so_save_data['so_cost'], 
-    #                 't_so': t_so - t_start, 't_amod_br': t_abr_start - t_abr_end, 't_transit_br': t_ptbr_start - t_ptbr_end, 't_total': t_end - t_start
-    #                 }
-    #     df_k_summary = pd.DataFrame([k_summary])
-    #     df_k_summary.to_csv(os.path.join(args.output_dir, f"k_summary{suffix}.csv"), index=False)
+        k_summary = {"bl": args.bl, "ca": args.ca, "cl": args.cl,
+                    "AMoD_so": amod_so_profit, "Transit_so": transit_so_obj, "AMoD_br": profit_lb, "AMoD_br_gap": gap_pct,
+                    "Transit_br": transit_br_obj, "V_a": v_a, "V_pt": v_pt, 'Total_V': v_a + v_pt, 'Social_cost':so_save_data['so_cost'], 
+                    't_so': t_so - t_start, 't_amod_br': t_abr_start - t_abr_end, 't_transit_br': t_ptbr_start - t_ptbr_end, 't_total': t_end - t_start
+                    }
+        df_k_summary = pd.DataFrame([k_summary])
+        df_k_summary.to_csv(os.path.join(args.output_dir, f"k_summary{suffix}.csv"), index=False)
     
-    # else:
-    #     raise RuntimeError("Transit Best Response optimization failed to find a solution. Please check the model and data.")
+    else:
+        raise RuntimeError("Transit Best Response optimization failed to find a solution. Please check the model and data.")
 
 if __name__ == "__main__":
     main()

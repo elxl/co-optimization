@@ -8,88 +8,6 @@ import multiprocessing as mp
 from concurrent.futures import ProcessPoolExecutor
 
 
-def obbt_worker(edges_chunk, net, demand, args, v_pt_fixed):
-    """
-    Worker function to build and solve OBBT for a chunk of edges.
-    Runs on parallel CPU cores.
-    """
-    # 1. Initialize local model for this CPU worker
-    m_obbt = gp.Model("OBBT_Worker")
-    m_obbt.params.OutputFlag = 0
-    
-    # --- Algorithmic Speedups ---
-    m_obbt.params.Method = 2       # Use Barrier Method (Fast for networks)
-    m_obbt.params.Crossover = 0    # Skip crossover (Only need bounds, not routing)
-    m_obbt.params.Threads = 1      # 1 thread per worker to prevent CPU choking
-
-    # 2. Build Variables
-    x_ap = m_obbt.addVars(net['paths_df']['path_id'].unique(), lb=0, name="x_path")
-    x_a = m_obbt.addVars(net['OD_pairs'], lb=1e-6, ub=[demand[od] for od in net['OD_pairs']], name="x_a")
-    r = m_obbt.addVars(net['E_a'], lb=0, name="r_ij") # Notice: No upper bound here!
-    f = m_obbt.addVars(net['E_a'], lb=0, name="f_ij")
-
-    # 3. Standard Flow Constraints
-    for node in net['road_nodes']:
-        rebal_in = r.sum('*', node)
-        rebal_out = r.sum(node, '*')
-        pass_out = gp.quicksum(x_a[o, d] for o, d in net['OD_pairs'] if net['zone_to_node'].get(o) == node)
-        pass_in = gp.quicksum(x_a[o, d] for o, d in net['OD_pairs'] if net['zone_to_node'].get(d) == node)
-        m_obbt.addConstr(rebal_in + pass_in == rebal_out + pass_out)
-
-    for od in net['OD_pairs']:
-        rel_paths = net['paths_df'][(net['paths_df']['o_zone'] == od[0]) & (net['paths_df']['d_zone'] == od[1])]['path_id'].unique()
-        m_obbt.addConstr(x_a[od] == x_ap.sum(rel_paths))
-
-    for e in net['E_a']:
-        p_on_e = net['paths_df'][(net['paths_df']['u'] == e[0]) & (net['paths_df']['v'] == e[1])]['path_id'].unique()
-        m_obbt.addConstr(f[e] == r[e] + x_ap.sum(p_on_e))
-
-    # 4. Rigorous Cycle Breakers (Economic Limits)
-    total_max_profit = 0
-    total_max_revenue = 0
-
-    for od in net['OD_pairs']:
-        d = demand[od]
-        if d < 1e-3: continue
-
-        rel_paths = net['paths_df'][(net['paths_df']['o_zone'] == od[0]) & (net['paths_df']['d_zone'] == od[1])]
-        if len(rel_paths) > 0:
-            min_dist_km = min([sum(net['dist_map'][r_p.u, r_p.v] for r_p in net['paths_df'][net['paths_df']['path_id']==p].itertuples()) for p in rel_paths['path_id'].unique()]) / 1000.0
-            c_min = args.ca * min_dist_km
-        else:
-            c_min = 0
-        
-        v_pt = v_pt_fixed[od]
-        x_vals = np.linspace(1e-5, d-1e-5, 1000)
-
-        revenue_curve = x_vals * (v_pt - np.log(x_vals) + np.log(d - x_vals))
-        total_max_revenue += np.max(revenue_curve)
-
-        profit_curve = revenue_curve - (c_min * x_vals)
-        max_profit = np.max(profit_curve)
-
-        # Only add to the budget if the OD pair is fundamentally profitable
-        if max_profit > 0:
-            total_max_profit += max_profit
-
-    m_obbt.addConstr(gp.quicksum(args.ca * r[e] * (net['dist_map'][e] / 1000.0) for e in net['E_a']) <= total_max_profit)
-    m_obbt.addConstr(gp.quicksum(args.ca * f[e] * (net['dist_map'][e] / 1000.0) for e in net['E_a']) <= total_max_revenue)
-
-    # 5. Solve for the assigned chunk of edges
-    r_ub_chunk = {}
-    f_ub_chunk = {}
-    
-    for e in edges_chunk:
-        m_obbt.setObjective(r[e], GRB.MAXIMIZE)
-        m_obbt.optimize()
-        r_ub_chunk[e] = m_obbt.ObjVal if m_obbt.status == GRB.OPTIMAL else 2 * net['Cap_map'][e]
-
-        m_obbt.setObjective(f[e], GRB.MAXIMIZE)
-        m_obbt.optimize()
-        f_ub_chunk[e] = m_obbt.ObjVal if m_obbt.status == GRB.OPTIMAL else 3 * net['Cap_map'][e]
-        
-    return r_ub_chunk, f_ub_chunk
-
 class AMoD_BestResponse:
     """
     Algorithm to calculate the solution of AMoD best response by calculating the upper and lower bound through relaxation and SCA.
@@ -147,7 +65,7 @@ class AMoD_BestResponse:
             if d > 1e-2:
                 self.x_a[od].ub = d - 1e-6
                 # 1. Create a geomspace from the left bound to the exact middle
-                half_pts = np.geomspace(1e-6, d / 2.0, num=25)
+                half_pts = np.geomspace(1e-6, d / 2.0, num=20)
                 
                 # 2. Mirror it to capture the right boundary's curvature
                 # half_pts[::-1] reverses the array, so we subtract from d
@@ -242,7 +160,7 @@ class AMoD_BestResponse:
             pwl_constrs.append(c1)
 
             v_max = 2 * C
-            v_pts = np.linspace(0, v_max, num=30).tolist()
+            v_pts = np.linspace(0, v_max, num=25).tolist()
             y_pts = [v_val * T0 * (1+self.args.alpha * ((b + v_val) / C) ** self.args.beta) for v_val in v_pts]
 
 

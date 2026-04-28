@@ -11,4 +11,4 @@ AMOD_WAIT = 5               # AMoD average pickup time (minutes)
 TRANSIT_FARE = 3.0          # Fixed transit fare ($)
 
 # --- Conversion Factors ---
-MPH_TO_M_PER_MIN = 1000 / 60  # Conversion for walking speed
+MPH_TO_M_PER_MIN = 1.6 * 1000 / 60  # Conversion for walking speed

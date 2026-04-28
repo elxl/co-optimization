@@ -115,7 +115,7 @@ class TransitBestResponse:
             d = demand[od]
             if d > 1e-2:
                 self.x_pt[od].ub = d - 1e-6
-                half_pts = np.geomspace(1e-6, d / 2.0, num=10)
+                half_pts = np.geomspace(1e-6, d / 2.0, num=20)
                 right_pts = d - half_pts[::-1] 
                 x_pts = np.unique(np.concatenate((half_pts, right_pts))).tolist()           
                 # Tangent lines for purely continuous outer approximation

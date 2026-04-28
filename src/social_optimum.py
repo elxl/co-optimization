@@ -56,7 +56,7 @@ class SocialOptimum:
                     w_indices.append((od, line, s))
         self.w = m.addVars(w_indices, lb=0, ub=[demand[od] for od, l, s in w_indices], name="w_sparse")
 
-        # 1. Flow on road
+        # 1. Flow on road and Travel Time
         for e in net['E_a']:
             p_on_e = net['paths_df'][(net['paths_df']['u'] == e[0]) & (net['paths_df']['v'] == e[1])]['path_id'].unique()
             m.addConstr(self.f[e] == self.r[e] + self.x_ap.sum(p_on_e))
@@ -144,8 +144,9 @@ class SocialOptimum:
             print("Social Optimum Infeasible!")
             return None, None, None
     
-    def get_results_dataframe(self):
+    def get_results_dataframe(self, price_dict=None):
         """
+        price_dict: {(o, d): price} the AMoD price for each OD pair.
         Recover AMoD price and post-process solved model to get statistics.
         """
         if self.m.status != GRB.OPTIMAL:
@@ -196,6 +197,7 @@ class SocialOptimum:
                 'AMoD_Paths_Used': used_paths_count,
                 'Pot_AMoD_Time_min': round(pot_amod_time, 2),
                 'Pot_AMoD_Dist_km': round(pot_amod_dist, 2),
+                'AMoD_Price': round(price_dict.get(od, 0), 2) if price_dict is not None else 0,
                 'Pot_Transit_Wait_min': round(pot_transit_wait, 2),
                 'Pot_Transit_Total_min': round(pot_transit_total_time, 2)
             })
