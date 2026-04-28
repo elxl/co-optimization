@@ -128,7 +128,7 @@ def main():
     # Pass the Social Optimum flows as the starting point for the SCA algorithm
     t_abr_start = time.time()
     print("\nRunning SCA to find local optimum (lower bound)...")
-    profit_lb, _, _, sca_converge = amod_br.solve_sca(
+    profit_lb, f_opt, r_opt, x_a_opt, x_ap_opt, sca_converge = amod_br.solve_sca(
         f_initial=target_amod_strategy['f'], 
         r_initial=target_amod_strategy['r'],
         x_a_initial=amod_so_state['x_a'],
@@ -149,6 +149,17 @@ def main():
             # Save convergence data to file
             with open(os.path.join(args.output_dir, f"sca_convergence{suffix}.pkl"), "wb") as f:
                 pickle.dump(sca_converge, f)
+
+        # Extract OD-level results for AMoD
+        print("Extracting OD-level mode split for AMoD Best Response...")
+        amod_res_state = {
+            'f': f_opt,
+            'x_a': x_a_opt,
+            'x_ap': x_ap_opt
+        }
+        df_amod_br_results = amod_br.get_results_dataframe(amod_res_state, target_transit_strategy)
+        df_amod_br_results.to_csv(os.path.join(args.output_dir, f"amod_br_mode_split{suffix}.csv"), index=False)
+        print("AMoD Best Response OD-level results saved!")
     else:
         raise RuntimeError("AMoD Best Response optimization failed to find a solution. Please check the model and data.")
 
@@ -161,7 +172,7 @@ def main():
     else:
         price_dict = df_so_results.set_index(['O', 'D'])['AMoD_Price'].to_dict()
     
-    amod_fixed_state = {
+    amod_so_state = {
         'f': target_amod_strategy['f'],
         'x_a': amod_so_state['x_a'],
         'x_ap': amod_so_state['x_ap'],
@@ -169,7 +180,7 @@ def main():
     }
     # print("\n--- 4. Solving Transit Best Response (MICP) ---")
     t_ptbr_start = time.time()
-    transit_br = TransitBestResponse(args, net_data, demand, amod_fixed_state, transit_so_state)
+    transit_br = TransitBestResponse(args, net_data, demand, amod_so_state, transit_so_state)
     transit_br_obj, transit_opt_strategy, tight, gap = transit_br.solve()
     t_ptbr_end = time.time()
     print(f"Transit Best Response completed in {(t_ptbr_end - t_ptbr_start)/60:.2f} minutes.")
@@ -210,6 +221,11 @@ def main():
     
     if transit_br_obj is not None:
         print(f"\n[Result] Transit Maximum Deviated Objective: {transit_br_obj:.2f}")
+        # Extract OD-level results for Transit Best Response
+        print("Extracting OD-level mode split for Transit Best Response...")
+        df_transit_br_results = transit_br.get_results_dataframe(transit_opt_strategy, amod_so_state)
+        df_transit_br_results.to_csv(os.path.join(args.output_dir, f"transit_br_mode_split{suffix_ptbr}.csv"), index=False)
+        print("Transit Best Response OD-level results saved!")
         
         # ---------------------------------------------------------
         # Evaluate Target State & Calculate k-Implementation Payments
@@ -217,7 +233,7 @@ def main():
         print("\n--- 5. Evaluating k-Implementation Subsidies ---")
 
         # Evaluate the utilities of both operators at the Social Optimum state
-        amod_so_profit = amod_br.evaluate(amod_fixed_state)
+        amod_so_profit = amod_br.evaluate(amod_so_state)
         transit_so_obj = transit_br.evaluate(transit_so_state)
 
         print(f"AMoD Profit at Target Strategy: {amod_so_profit:.2f}")

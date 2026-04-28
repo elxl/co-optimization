@@ -1,11 +1,12 @@
 import gurobipy as gp
+import pandas as pd
 from gurobipy import GRB
 import numpy as np
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 import os
 import multiprocessing as mp
-from concurrent.futures import ProcessPoolExecutor
+from src.constants import AMOD_WAIT
 
 
 class AMoD_BestResponse:
@@ -233,9 +234,13 @@ class AMoD_BestResponse:
         if f_initial is None or r_initial is None:
             f_k = {e: 0 for e in self.net['E_a']}
             r_k = {e: 0 for e in self.net['E_a']}
+            x_a_k = {od: 0 for od in self.net['OD_pairs']}
+            x_ap_k = {p: 0 for p in self.x_ap.keys()}
         else:
             f_k = f_initial.copy()
             r_k = r_initial.copy()
+            x_a_k = {od: 0 for od in self.net['OD_pairs']}
+            x_ap_k = {p: 0 for p in self.x_ap.keys()}
 
         # ---------------------------
         # Warm start with so solution
@@ -338,6 +343,8 @@ class AMoD_BestResponse:
                 
                 f_k = f_cand.copy()
                 r_k = r_cand.copy()
+                x_a_k = x_a_cand.copy()
+                x_ap_k = {p: self.x_ap[p].X for p in self.x_ap.keys()}
                 current_true_profit = cand_true_profit
                 
                 tqdm.write(f"SCA Iteration {iteration}: Accepted. Max flow change = {max_diff:.4f}")
@@ -417,7 +424,63 @@ class AMoD_BestResponse:
             'true_profit': true_obj_history,
             'max_flow_diff': diff_history
         }
-        return true_profit_lb, f_k, r_k, sca_converge
+        return true_profit_lb, f_k, r_k, x_a_k, x_ap_k, sca_converge
+    
+    def get_results_dataframe(self, amod_res, transit_solution):
+        """
+        Recover AMoD prices and return OD-level statistics for the AMoD Best Response.
+        amod_res: dict containing 'f', 'x_a', 'x_ap' from the accepted SCA state.
+        transit_solution: dict containing 'frequencies' from the fixed transit strategy.
+        """
+        congested_time_map = {}
+        for e in self.net['E_a']:
+            v_total = self.net['b_map'][e] + amod_res['f'][e]
+            ratio = v_total / self.net['Cap_map'][e]
+            congested_time_map[e] = self.net['T0_map'][e] * (1 + self.args.alpha * (ratio**self.args.beta))
+
+        line_wait_map = {l: (0.5 * 60 / transit_solution['frequencies'][l]) if transit_solution['frequencies'][l] > 0 else 0 for l in self.net['L']}
+
+        detailed_summary = []
+        for od in self.net['OD_pairs']:
+            d = self.demand[od]
+            rel_paths = self.net['paths_df'][(self.net['paths_df']['o_zone'] == od[0]) & (self.net['paths_df']['d_zone'] == od[1])]['path_id'].unique()
+            
+            amod_flow = amod_res['x_a'][od]
+            transit_flow = d - amod_flow
+
+            best_p = sorted(rel_paths)[0] if len(rel_paths) > 0 else None
+
+            if amod_flow > 1e-6:
+                pot_amod_dist = sum(amod_res['x_ap'].get(p, 0) * sum(self.net['dist_map'][r.u, r.v] for r in self.net['paths_df'][self.net['paths_df']['path_id']==p].itertuples()) for p in rel_paths) / (amod_flow * 1000.0)
+                pot_amod_time = sum(amod_res['x_ap'].get(p, 0) * (sum(congested_time_map[r.u, r.v] for r in self.net['paths_df'][self.net['paths_df']['path_id']==p].itertuples()) + AMOD_WAIT) for p in rel_paths) / amod_flow
+            elif best_p:
+                p_edges = self.net['paths_df'][self.net['paths_df']['path_id'] == best_p]
+                pot_amod_dist = sum(self.net['dist_map'][r.u, r.v] for r in p_edges.itertuples()) / 1000.0
+                pot_amod_time = sum(congested_time_map[r.u, r.v] for r in p_edges.itertuples()) + AMOD_WAIT
+            else:
+                pot_amod_dist, pot_amod_time = 0, 0
+
+            pot_transit_wait = sum(line_wait_map[l] for l in self.net['opt_data'][od]['gamma_odl'])
+            walking_time = self.net['opt_data'][od]['walking_dist'] / (self.args.walk * 1000 / 60)
+            pot_transit_total_time = self.net['opt_data'][od]['tau_pt'] + walking_time + pot_transit_wait
+
+            # Price Recovery based on Logit Exact Reformulation
+            v_pt = self.v_pt_fixed[od]
+            amod_price = -(np.log(amod_flow) - np.log(d - amod_flow) + self.args.vot1 * pot_amod_time + v_pt)
+
+            detailed_summary.append({
+                'O': od[0], 'D': od[1],
+                'Demand': d,
+                'AMoD_Flow': round(amod_flow, 2),
+                'Transit_Flow': round(transit_flow, 2),
+                'Pot_AMoD_Time_min': round(pot_amod_time, 2),
+                'Pot_AMoD_Dist_km': round(pot_amod_dist, 2),
+                'AMoD_Price': round(amod_price, 2),
+                'Pot_Transit_Wait_min': round(pot_transit_wait, 2),
+                'Pot_Transit_Total_min': round(pot_transit_total_time, 2)
+            })
+
+        return pd.DataFrame(detailed_summary)
     
     def evaluate(self, amod_solution):
         """

@@ -1,6 +1,7 @@
 import gurobipy as gp
 from gurobipy import GRB
 import numpy as np
+import pandas as pd
 
 from src.constants import S_SET, TRANSIT_FARE, MPH_TO_M_PER_MIN, AMOD_WAIT, BASE_LOAD_FACTOR
 
@@ -363,6 +364,65 @@ class TransitBestResponse:
         else:
             print("Transit Best Response Failed to Solve.")
             return None, None, False, None
+        
+    def get_results_dataframe(self, transit_res, amod_so_solution):
+            """
+            Return OD-level statistics for the Transit Best Response.
+            transit_res: dict containing 'frequencies' and 'x_pt' from the Transit BR output.
+            amod_so_solution: dict containing social optimum AMoD solution ('f', 'x_a', 'x_ap', 'pi_a').
+            """
+            
+            # Calculate congested edge times based entirely on FIXED AMoD flows
+            t_e = {}
+            for e in self.net['E_a']:
+                v_total = self.net['b_map'][e] + amod_so_solution['f'][e]
+                ratio = v_total / self.net['Cap_map'][e]
+                t_e[e] = self.net['T0_map'][e] * (1 + self.args.alpha * (ratio ** self.args.beta))
+
+            line_wait_map = {l: (0.5 * 60 / transit_res['frequencies'][l]) if transit_res['frequencies'][l] > 0 else 0 for l in self.net['L']}
+
+            detailed_summary = []
+            for od in self.net['OD_pairs']:
+                d = self.demand[od]
+                transit_flow = transit_res['x_pt'][od]
+                
+                # Recalculate AMoD flow dynamically
+                amod_flow_new = d - transit_flow
+                
+                rel_paths = self.net['paths_df'][(self.net['paths_df']['o_zone'] == od[0]) & (self.net['paths_df']['d_zone'] == od[1])]['path_id'].unique()
+                
+                # Use the FIXED AMoD solution strictly for calculating routing proportions 
+                fixed_x_a = amod_so_solution['x_a'][od]
+                best_p = sorted(rel_paths)[0] if len(rel_paths) > 0 else None
+
+                if fixed_x_a > 1e-6:
+                    pot_amod_dist = sum(amod_so_solution['x_ap'].get(p, 0) * sum(self.net['dist_map'][r.u, r.v] for r in self.net['paths_df'][self.net['paths_df']['path_id']==p].itertuples()) for p in rel_paths) / (fixed_x_a * 1000.0)
+                    pot_amod_time = sum(amod_so_solution['x_ap'].get(p, 0) * (sum(t_e[r.u, r.v] for r in self.net['paths_df'][self.net['paths_df']['path_id']==p].itertuples()) + AMOD_WAIT) for p in rel_paths) / fixed_x_a
+                elif best_p:
+                    p_edges = self.net['paths_df'][self.net['paths_df']['path_id'] == best_p]
+                    pot_amod_dist = sum(self.net['dist_map'][r.u, r.v] for r in p_edges.itertuples()) / 1000.0
+                    pot_amod_time = sum(t_e[r.u, r.v] for r in p_edges.itertuples()) + AMOD_WAIT
+                else:
+                    pot_amod_dist, pot_amod_time = 0, 0
+
+                pot_transit_wait = sum(line_wait_map[l] for l in self.net['opt_data'][od]['gamma_odl'])
+                walking_time = self.net['opt_data'][od]['walking_dist'] / self.W_SPEED
+                pot_transit_total_time = self.net['opt_data'][od]['tau_pt'] + walking_time + pot_transit_wait
+
+                detailed_summary.append({
+                    'O': od[0], 'D': od[1],
+                    'Demand': d,
+                    'AMoD_Flow': round(amod_flow_new, 2),
+                    'Transit_Flow': round(transit_flow, 2),
+                    'Pot_AMoD_Time_min': round(pot_amod_time, 2),
+                    'Pot_AMoD_Dist_km': round(pot_amod_dist, 2),
+                    # Price strictly remains fixed under transit deviation
+                    'AMoD_Price': round(amod_so_solution['pi_a'].get(od, 0), 2),
+                    'Pot_Transit_Wait_min': round(pot_transit_wait, 2),
+                    'Pot_Transit_Total_min': round(pot_transit_total_time, 2)
+                })
+
+            return pd.DataFrame(detailed_summary)
             
     def evaluate(self, transit_solution):
         """
