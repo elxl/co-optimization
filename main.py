@@ -20,7 +20,7 @@ def main():
     parser.add_argument("--bl", type=float, default=1.0, help='Background traffic level')
     parser.add_argument("--ca", type=float, default=1.0, help='AMoD operation cost per km')
     parser.add_argument("--cl", type=float, default=320, help='Metro operation cost per line per hour')
-    parser.add_argument("--pt_cap", type=int, default=1400, help='Transit capacity (passengers per departure)')
+    parser.add_argument("--pt_cap", type=int, default=900, help='Transit capacity (passengers per departure)')
     parser.add_argument("--walk", type=float, default=3.6, help='Walking speed (mph)')
     parser.add_argument("--vot", type=float, default=0.4, help='Environmental price for driving')
     parser.add_argument("--vot1", type=float, default=0.3, help='Value of time for passengers')
@@ -69,17 +69,16 @@ def main():
             print(f"Social Optimum solved!")
             # Generate summary of so solution and save to file
             print("Recovering prices and generating mode split summary...")
+            df_so_results = so_model.get_results_dataframe()
             df_so_summary = so_model.get_summary()
             df_so_summary["So_solve_time"] = (t_so - t_start)/60
             df_so_summary.to_csv(os.path.join(args.output_dir, f"so_summary{suffix}.csv"), index=False)
+            df_so_results.to_csv(os.path.join(args.output_dir, f"mode_split{suffix}.csv"), index=False)
 
             # ---------------------------------------------------------
             # Extract the operators' strategies at the Social Optimum
             # ---------------------------------------------------------
             price_dict = df_so_results.set_index(['O', 'D'])['AMoD_Price'].to_dict()
-            df_so_results = so_model.get_results_dataframe(price_dict)
-            df_so_results.to_csv(os.path.join(args.output_dir, f"mode_split{suffix}.csv"), index=False)
-
             amod_so_state = {
                 'r': target_amod_strategy['r'],
                 'f': target_amod_strategy['f'],
@@ -112,56 +111,56 @@ def main():
         else:
             raise RuntimeError("Social Optimum optimization failed to find a solution. Please check the model and data. If you have a previously solved solution, you can load it using the --load_so argument.")
 
-    # ----------------------
-    # AMoD best response
-    # ----------------------
-    print("\n--- 3. Solving AMoD Best Response ---")
-    amod_br = AMoD_BestResponse(args, net_data, demand, target_transit_strategy)
+    # # ----------------------
+    # # AMoD best response
+    # # ----------------------
+    # print("\n--- 3. Solving AMoD Best Response ---")
+    # amod_br = AMoD_BestResponse(args, net_data, demand, target_transit_strategy)
 
-    # Solve convex relaxation for upper bound
-    profit_ub = amod_br.solve_upper_bound_relaxation()
-    if profit_ub is not None:
-        print(f"AMoD Best Response Upper Bound (Relaxation): {profit_ub:.2f}")
-    else:
-        raise RuntimeError("AMoD Best Response relaxation failed to find a solution. Please check the model and data.")
+    # # Solve convex relaxation for upper bound
+    # profit_ub = amod_br.solve_upper_bound_relaxation()
+    # if profit_ub is not None:
+    #     print(f"AMoD Best Response Upper Bound (Relaxation): {profit_ub:.2f}")
+    # else:
+    #     raise RuntimeError("AMoD Best Response relaxation failed to find a solution. Please check the model and data.")
     
-    # Pass the Social Optimum flows as the starting point for the SCA algorithm
-    t_abr_start = time.time()
-    print("\nRunning SCA to find local optimum (lower bound)...")
-    profit_lb, f_opt, r_opt, x_a_opt, x_ap_opt, sca_converge = amod_br.solve_sca(
-        f_initial=target_amod_strategy['f'], 
-        r_initial=target_amod_strategy['r'],
-        x_a_initial=amod_so_state['x_a'],
-        x_ap_initial=amod_so_state['x_ap']
-    )
-    t_abr_end = time.time()
-    print(f"SCA completed in {(t_abr_end - t_abr_start)/60:.2f} minutes.")
-    sca_converge['total_time'] = t_abr_end - t_abr_start
-    sca_converge['upper_bound'] = profit_ub
+    # # Pass the Social Optimum flows as the starting point for the SCA algorithm
+    # t_abr_start = time.time()
+    # print("\nRunning SCA to find local optimum (lower bound)...")
+    # profit_lb, f_opt, r_opt, x_a_opt, x_ap_opt, sca_converge = amod_br.solve_sca(
+    #     f_initial=target_amod_strategy['f'], 
+    #     r_initial=target_amod_strategy['r'],
+    #     x_a_initial=amod_so_state['x_a'],
+    #     x_ap_initial=amod_so_state['x_ap']
+    # )
+    # t_abr_end = time.time()
+    # print(f"SCA completed in {(t_abr_end - t_abr_start)/60:.2f} minutes.")
+    # sca_converge['total_time'] = t_abr_end - t_abr_start
+    # sca_converge['upper_bound'] = profit_ub
     
-    if profit_lb is not None:
-        print(f"\nAMoD Maximum Profit (Lower Bound): {profit_lb:.2f}")
-        if profit_ub != float('inf'):
-            gap_abs = profit_ub - profit_lb
-            gap_pct = gap_abs / abs(profit_lb) * 100 if profit_lb != 0 else 0
-            print(f"[Result] Optimality Gap: ${gap_abs:.2f} ({gap_pct:.2f}%)")
-            sca_converge['optimality_gap'] = gap_pct
-            # Save convergence data to file
-            with open(os.path.join(args.output_dir, f"sca_convergence{suffix}.pkl"), "wb") as f:
-                pickle.dump(sca_converge, f)
+    # if profit_lb is not None:
+    #     print(f"\nAMoD Maximum Profit (Lower Bound): {profit_lb:.2f}")
+    #     if profit_ub != float('inf'):
+    #         gap_abs = profit_ub - profit_lb
+    #         gap_pct = gap_abs / abs(profit_lb) * 100 if profit_lb != 0 else 0
+    #         print(f"[Result] Optimality Gap: ${gap_abs:.2f} ({gap_pct:.2f}%)")
+    #         sca_converge['optimality_gap'] = gap_pct
+    #         # Save convergence data to file
+    #         with open(os.path.join(args.output_dir, f"sca_convergence{suffix}.pkl"), "wb") as f:
+    #             pickle.dump(sca_converge, f)
 
-        # Extract OD-level results for AMoD
-        print("Extracting OD-level mode split for AMoD Best Response...")
-        amod_res_state = {
-            'f': f_opt,
-            'x_a': x_a_opt,
-            'x_ap': x_ap_opt
-        }
-        df_amod_br_results = amod_br.get_results_dataframe(amod_res_state, target_transit_strategy)
-        df_amod_br_results.to_csv(os.path.join(args.output_dir, f"amod_br_mode_split{suffix}.csv"), index=False)
-        print("AMoD Best Response OD-level results saved!")
-    else:
-        raise RuntimeError("AMoD Best Response optimization failed to find a solution. Please check the model and data.")
+    #     # Extract OD-level results for AMoD
+    #     print("Extracting OD-level mode split for AMoD Best Response...")
+    #     amod_res_state = {
+    #         'f': f_opt,
+    #         'x_a': x_a_opt,
+    #         'x_ap': x_ap_opt
+    #     }
+    #     df_amod_br_results = amod_br.get_results_dataframe(amod_res_state, target_transit_strategy)
+    #     df_amod_br_results.to_csv(os.path.join(args.output_dir, f"amod_br_mode_split{suffix}.csv"), index=False)
+    #     print("AMoD Best Response OD-level results saved!")
+    # else:
+    #     raise RuntimeError("AMoD Best Response optimization failed to find a solution. Please check the model and data.")
 
     # ----------------------
     # Transit best response

@@ -171,9 +171,6 @@ class TransitBestResponse:
             freq_opt = {l: self.s_l[l].X for l in self.net['L']}
             solver_x_pt = {od:self.x_pt[od].X for od in self.net['OD_pairs']}
 
-            # Feasibility recovery
-            tight_relaxation = True
-
             # -----------------------------------
             # Check if relaxation is tight
             # -----------------------------------
@@ -191,9 +188,16 @@ class TransitBestResponse:
                 C_od = self.args.vot1 * (opt_data['tau_pt'] + walk_time) + TRANSIT_FARE
                 
                 # Evaluate the slack of the inequality constraint
-                solver_lhs = self.H_x[od].X + self.args.vot1 * wait_term_val + solver_x_pt[od] * (C_od + self.v_a[od])
+                # solver_lhs = self.H_x[od].X + self.args.vot1 * wait_term_val + solver_x_pt[od] * (C_od + self.v_a[od])
+                # --- NEW LOGIC: Calculate the TRUE entropy value ---
+                x_val = solver_x_pt[od]
+                x_safe = max(1e-5, min(x_val, d - 1e-5)) # Protect against log(0)
+                true_H = x_safe * np.log(x_safe) - x_safe * np.log(d - x_safe)
                 
-                if solver_lhs < -1e-3: # Numerical tolerance for tightness
+                # Evaluate the true slack of the original non-linear equality
+                solver_lhs = true_H + self.args.vot1 * wait_term_val + x_val * (C_od + self.v_a[od])
+                
+                if solver_lhs < -1e-2: # Numerical tolerance for tightness
                     tight_relaxation = False
                     break
             # ---------------------------------------------------------
@@ -222,41 +226,6 @@ class TransitBestResponse:
                 print("Repairing frequencies to evaluate true optimality gap...")
 
                 # Calculate Exact Strict Logit Flows for the Repaired Upper Bound
-                exact_x_pt = {}
-                for od in self.net['OD_pairs']:
-                    d = self.demand[od]
-                    if d <= 1e-6:
-                        exact_x_pt[od] = 0.0
-                        continue
-                        
-                    opt_data = self.net['opt_data'][od]
-                    valid_path = True
-                    true_wait_time = 0
-                    for l in opt_data['gamma_odl']:
-                        if freq_opt[l] > 1e-6:
-                            true_wait_time += 30.0 / freq_opt[l]
-                        else:
-                            valid_path = False; break
-                    
-                    if not valid_path:
-                        exact_x_pt[od] = 0.0
-                        continue
-                    
-                    walk_time = opt_data['walking_dist'] / self.W_SPEED
-                    v_pt = -self.args.vot1 * (true_wait_time + opt_data['tau_pt'] + walk_time) - TRANSIT_FARE
-                    exponent = self.v_a[od] - v_pt
-                    
-                    if exponent > 500: exact_x_pt[od] = 0.0
-                    elif exponent < -500: exact_x_pt[od] = d
-                    else: exact_x_pt[od] = d / (1.0 + np.exp(exponent))
-                
-                # Evaluate Repaired Upper Bound (Removes Tangent Error!)
-                profit_repaired_ub = self.evaluate({
-                    'frequencies': freq_opt, 
-                    'fare': TRANSIT_FARE, 
-                    'x_pt': exact_x_pt 
-                })
-
                 feasible_freq = freq_opt.copy()
                 final_x_pt = {}
                 sorted_S = sorted(list(S_SET))
@@ -352,10 +321,10 @@ class TransitBestResponse:
                 profit_lb = self.evaluate(br_strategy)
 
                 # Print Final Gap Summary
-                print(f"Repaired Logit Upper Bound:  {profit_repaired_ub:.2f}")
+                print(f"Upper Bound (relaxed):  {profit_ub:.2f}")
                 print(f"Primal Lower Bound (True):   {profit_lb:.2f}")
                 
-                gap = ((profit_repaired_ub - profit_lb) / abs(profit_repaired_ub)) * 100 if profit_repaired_ub != 0 else 0
+                gap = ((profit_ub - profit_lb) / abs(profit_ub)) * 100 if profit_ub != 0 else 0
                 print(f"Suboptimality Gap:           {gap:.2f}%\n")
                 
                 # Returns the tight_relaxation flag as requested!

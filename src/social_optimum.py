@@ -144,9 +144,8 @@ class SocialOptimum:
             print("Social Optimum Infeasible!")
             return None, None, None
     
-    def get_results_dataframe(self, price_dict=None):
+    def get_results_dataframe(self):
         """
-        price_dict: {(o, d): price} the AMoD price for each OD pair.
         Recover AMoD price and post-process solved model to get statistics.
         """
         if self.m.status != GRB.OPTIMAL:
@@ -197,7 +196,6 @@ class SocialOptimum:
                 'AMoD_Paths_Used': used_paths_count,
                 'Pot_AMoD_Time_min': round(pot_amod_time, 2),
                 'Pot_AMoD_Dist_km': round(pot_amod_dist, 2),
-                'AMoD_Price': round(price_dict.get(od, 0), 2) if price_dict is not None else 0,
                 'Pot_Transit_Wait_min': round(pot_transit_wait, 2),
                 'Pot_Transit_Total_min': round(pot_transit_total_time, 2)
             })
