@@ -36,9 +36,9 @@ def main():
 
     reg_dict = {0:"", 1:"_quad", 2:"_ent"}
     if args.reg != 0:
-        suffix = f"_{args.bl}_{args.ca}_{args.pt_cap}{reg_dict[args.reg]}_theta{args.theta}"
+        suffix = f"_{args.bl}_{args.ca}_{args.cl}{reg_dict[args.reg]}_theta{args.theta}"
     else:
-        suffix = f"_{args.bl}_{args.ca}_{args.pt_cap}"
+        suffix = f"_{args.bl}_{args.ca}_{args.cl}"
 
     t_start = time.time()
     print("--- 1. Loading Network Data ---")
