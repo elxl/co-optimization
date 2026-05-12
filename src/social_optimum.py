@@ -302,5 +302,115 @@ class SocialOptimum:
             "Rebal_Ratio": round(total_rebal / total_pass_dist, 3) if total_pass_dist > 0 else 0,
             "BG_Delay_Total_min": round(total_bg_increase_min, 2),
         }
-        
+
         return pd.DataFrame([run_summary])
+
+
+def evaluate_baseline_social_cost(args, net_data, demand, amod_state, freq_dict):
+    """Social-cost summary at a fixed AMoD-best-response solution with externally-
+    provided transit frequencies (the no-subsidy baseline). Returns the same
+    DataFrame schema as `SocialOptimum.get_summary()`, computed with the exact
+    same formulas — keep this function in sync with `get_summary` line-for-line.
+
+    amod_state: dict with keys 'f', 'r', 'x_a', 'x_ap' from
+                AMoD_BestResponse.solve_sca() (plain dicts of solved values).
+    freq_dict:  {line_id: frequency_vph} covering every line in net_data['L'].
+    """
+    net = net_data
+    f, r, x_a, x_ap = amod_state['f'], amod_state['r'], amod_state['x_a'], amod_state['x_ap']
+
+    # Constants — match SocialOptimum.__init__ defaults
+    W_SPEED = args.walk * MPH_TO_M_PER_MIN
+
+    # AMoD-BR enforces x_a + x_pt == demand (amod_br.py:128); derive x_pt accordingly.
+    x_pt = {od: demand[od] - x_a[od] for od in net['OD_pairs']}
+
+    # Mirror `v[e] == b_map[e] + f[e]` (social_optimum.py:63) and GenConstrPow on v/Cap (line 65).
+    v = {e: net['b_map'][e] + f[e] for e in net['E_a']}
+    v_ratio_pow = {e: (v[e] / net['Cap_map'][e]) ** (args.beta + 1) for e in net['E_a']}
+
+    # 1. Transit frequency and operation cost (mirrors get_summary lines 217-228)
+    transit_summary = []
+    for l in net['L']:
+        line_passengers = sum(x_pt[od] for od in net['OD_pairs'] if l in net['opt_data'][od]['gamma_odl'])
+        transit_summary.append({
+            'Line_ID': l,
+            'Frequency_vph': round(freq_dict[l], 2),
+            'Total_Passengers': round(line_passengers, 2),
+        })
+    df_transit = pd.DataFrame(transit_summary)
+    total_transit_op_cost = sum(args.cl * freq_dict[l] for l in net['L'])
+    avg_freq = df_transit['Frequency_vph'].mean()
+
+    # 2. AMoD distances (mirrors lines 231-233)
+    total_rebal = sum(r[e] * net['dist_map'][e] for e in net['E_a']) / 1000
+    total_pass_dist = sum(
+        x_ap[p] * sum(net['dist_map'][rec.u, rec.v]
+                      for rec in net['paths_df'][net['paths_df']['path_id'] == p].itertuples())
+        for p in x_ap.keys() if x_ap[p] > 0
+    ) / 1000
+
+    # 3. Mode split (mirrors lines 235-242, computed directly to avoid building results df)
+    total_amod = sum(x_a[od] for od in net['OD_pairs'])
+    total_transit = sum(x_pt[od] for od in net['OD_pairs'])
+    total_demand = sum(demand[od] for od in net['OD_pairs'])
+    amod_share = (total_amod / total_demand) * 100 if total_demand > 0 else 0
+    transit_share = (total_transit / total_demand) * 100 if total_demand > 0 else 0
+
+    # 4. Background traffic impact (mirrors lines 244-251)
+    total_bg_increase_min = 0
+    for e in net['E_a']:
+        v_final = v[e]
+        t_congested = net['T0_map'][e] * (1 + args.alpha * ((v_final / net['Cap_map'][e]) ** args.beta))
+        t_baseline = net['T0_map'][e] * (1 + args.alpha * ((net['b_map'][e] / net['Cap_map'][e]) ** args.beta))
+        edge_increase = net['b_map'][e] * (t_congested - t_baseline)
+        total_bg_increase_min += edge_increase
+
+    # 5. Social-cost components (mirrors lines 253-273)
+    # NOTE: in SO the transit-wait term is `0.5*60 * sum_{(od,l,s)} (1/s) * w[od,l,s]`.
+    # The SO constraints force `w[od,l,s] = x_pt[od] * z[l,s]` with exactly one s active
+    # per line, so summed over s it collapses to `x_pt[od] * (1/s_l)`. The form below is
+    # therefore algebraically identical to the SO expression when freq_dict = {l: s_l.X}.
+    road_time_cost = sum(net['T0_map'][e] * (v[e] + args.alpha * net['Cap_map'][e] * v_ratio_pow[e]) for e in net['E_a']) - net['baseline_road_cost']
+    amod_wait = AMOD_WAIT * total_amod
+    transit_time_fixed = sum(x_pt[od] * net['opt_data'][od]['tau_pt'] for od in net['OD_pairs'])
+    transit_walk_fixed = sum(x_pt[od] * net['opt_data'][od]['walking_dist'] / W_SPEED for od in net['OD_pairs'])
+    transit_waiting = 0.5 * 60 * sum(
+        x_pt[od] * sum(1.0 / freq_dict[l] for l in net['opt_data'][od]['gamma_odl'] if freq_dict[l] > 0)
+        for od in net['OD_pairs']
+    )
+    amod_op_cost = sum(args.ca * f[u, v_edge] * (net['dist_map'][u, v_edge] / 1000.0) for u, v_edge in net['E_a'])
+    op_cost = sum(args.cl * freq_dict[l] for l in net['L'])
+
+    total_physical_cost = (
+        args.vot * road_time_cost +
+        args.vot1 * (transit_time_fixed + transit_waiting + transit_walk_fixed + amod_wait) +
+        amod_op_cost +
+        op_cost
+    )
+
+    # 6. Per-OD potential transit wait (mirrors get_results_dataframe line 187 + summary line 276)
+    line_wait_map = {l: (0.5 * 60 / freq_dict[l]) if freq_dict[l] > 0 else 0 for l in net['L']}
+    pot_transit_wait_min = [sum(line_wait_map[l] for l in net['opt_data'][od]['gamma_odl']) for od in net['OD_pairs']]
+    avg_wait = float(np.mean(pot_transit_wait_min)) if pot_transit_wait_min else 0.0
+
+    run_summary = {
+        "BL": args.bl,
+        "K_l": args.cl,
+        "C_ij": args.ca,
+        "Total_Social_Cost": round(total_physical_cost, 2),
+        "Total_Demand": total_demand,
+        "AMoD_Flow": round(total_amod, 2),
+        "Transit_Flow": round(total_transit, 2),
+        "AMoD_Share_pct": round(amod_share, 2),
+        "Transit_Share_pct": round(transit_share, 2),
+        "Avg_Transit_Freq": round(avg_freq, 2),
+        "Avg_Wait_Time_min": round(avg_wait, 2),
+        "Transit_Op_Cost": round(total_transit_op_cost, 2),
+        "AMoD_Op_Cost": round(amod_op_cost, 2),
+        "Rebalancing_Dist_km": round(total_rebal, 2),
+        "AMoD_Pax_Dist_km": round(total_pass_dist, 2),
+        "Rebal_Ratio": round(total_rebal / total_pass_dist, 3) if total_pass_dist > 0 else 0,
+        "BG_Delay_Total_min": round(total_bg_increase_min, 2),
+    }
+    return pd.DataFrame([run_summary])
