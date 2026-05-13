@@ -254,19 +254,25 @@ def main():
         t_end = time.time()
         print(f"\nTotal runtime: {(t_end - t_start)/60:.2f} minutes")
 
+        # Pure social cost at the SO state (matches `Total_Social_Cost` in so_summary.csv).
+        # Note: `so_save_data['so_cost']` is `m.ObjVal` — the *regularized* SO objective
+        # (= pure_social_cost + (1/theta) * Σ x·ln(x)).
+        df_so_cost = evaluate_baseline_social_cost(args, net_data, demand, amod_so_state,
+                                                   transit_so_state['frequencies'])
+        social_cost_so = float(df_so_cost['Total_Social_Cost'].iloc[0])
+
         # Social cost when BOTH operators unilaterally deviate from SO to their
         # individual best responses (AMoD-BR's f/r/x_a/x_ap against Transit-BR's frequencies).
-        # Not a joint Nash equilibrium — each BR was computed against the SO state of the other,
-        # but this is the natural "what if neither cooperates" reference for the k-summary.
         df_br_cost = evaluate_baseline_social_cost(args, net_data, demand, amod_res_state,
                                                    transit_opt_strategy['frequencies'])
         social_cost_br = float(df_br_cost['Total_Social_Cost'].iloc[0])
-        print(f"=> Social Cost at joint BR deviation: ${social_cost_br:.2f}  (SO: ${so_save_data['so_cost']:.2f})")
+        print(f"=> Social Cost at SO: ${social_cost_so:.2f}  |  at joint BR deviation: ${social_cost_br:.2f}")
 
         k_summary = {"bl": args.bl, "ca": args.ca, "cl": args.cl,
                     "AMoD_so": amod_so_profit, "Transit_so": transit_so_obj, "AMoD_br": profit_lb, "AMoD_br_gap": gap_pct,
                     "Transit_br": transit_br_obj, "V_a": v_a, "V_pt": v_pt, 'Total_V': v_a + v_pt,
-                    'Social_cost': so_save_data['so_cost'], 'Social_cost_br': social_cost_br,
+                    'Social_cost': social_cost_so, 'Social_cost_br': social_cost_br,
+                    'SO_obj_regularized': so_save_data['so_cost'],
                     't_so': t_so - t_start, 't_amod_br': t_abr_start - t_abr_end, 't_transit_br': t_ptbr_start - t_ptbr_end, 't_total': t_end - t_start
                     }
         df_k_summary = pd.DataFrame([k_summary])
