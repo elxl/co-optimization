@@ -6,7 +6,8 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 import os
 import multiprocessing as mp
-from src.constants import AMOD_WAIT
+from src.constants import AMOD_WAIT, MPH_TO_M_PER_MIN
+from src.transit_paths import choose_path
 
 
 class AMoD_BestResponse:
@@ -21,6 +22,7 @@ class AMoD_BestResponse:
         self.args = args
         self.net = network_data
         self.demand = demand_dict
+        self.W_SPEED = args.walk * MPH_TO_M_PER_MIN
 
         # Pre-calculate fixed transit utility for each OD pair
         # V_pt = -VOT_USER * (t_in_veh+t_wait+t)walk) - Fare
@@ -34,15 +36,24 @@ class AMoD_BestResponse:
     
     def _calculate_fixed_transit_utility(self, transit_solution):
         v_pt = {}
+        self.pt_path_choice = {}
+        freqs = transit_solution['frequencies']
+        prefer = transit_solution.get('path_choice', {})
         for od in self.net['OD_pairs']:
-            opt_data = self.net['opt_data'][od]
-            # Wait time based on fixed frequencies from social optimum
-            wait_time = sum(0.5 * 60 / transit_solution['frequencies'][l] for l in opt_data['gamma_odl'] if transit_solution['frequencies'][l] > 0)
-            walk_time = opt_data['walking_dist'] / (self.args.walk * 1000 / 60) # convert to minutes
-            in_veh_time = opt_data['tau_pt']
+            paths = self.net['pt_paths'][od]
+            # Passengers take the min-time candidate path under the fixed frequencies,
+            # keeping the transit player's own choice on ties.
+            k, t_pt = choose_path(paths, freqs, self.W_SPEED, prefer=prefer.get(od))
+            if t_pt == float('inf'):
+                # Every candidate uses an unserved line: fall back to skipping those lines
+                # in the waiting time (the GTFS zero-frequency convention).
+                path = paths[k]
+                wait_time = sum(0.5 * 60 / freqs[l] for l in path['gamma_odl'] if freqs[l] > 0)
+                t_pt = path['tau_pt'] + path['walking_dist'] / self.W_SPEED + wait_time
 
-            v_pt[od] = -self.args.vot1 * (in_veh_time + walk_time + wait_time) - transit_solution['fare']
-        
+            self.pt_path_choice[od] = k
+            v_pt[od] = -self.args.vot1 * t_pt - transit_solution['fare']
+
         return v_pt
 
     def _build_base_model(self):
@@ -460,9 +471,10 @@ class AMoD_BestResponse:
             else:
                 pot_amod_dist, pot_amod_time = 0, 0
 
-            pot_transit_wait = sum(line_wait_map[l] for l in self.net['opt_data'][od]['gamma_odl'])
-            walking_time = self.net['opt_data'][od]['walking_dist'] / (self.args.walk * 1000 / 60)
-            pot_transit_total_time = self.net['opt_data'][od]['tau_pt'] + walking_time + pot_transit_wait
+            path = self.net['pt_paths'][od][self.pt_path_choice[od]]
+            pot_transit_wait = sum(line_wait_map[l] for l in path['gamma_odl'])
+            walking_time = path['walking_dist'] / self.W_SPEED
+            pot_transit_total_time = path['tau_pt'] + walking_time + pot_transit_wait
 
             # Price Recovery based on Logit Exact Reformulation
             v_pt = self.v_pt_fixed[od]
@@ -477,7 +489,8 @@ class AMoD_BestResponse:
                 'Pot_AMoD_Dist_km': round(pot_amod_dist, 2),
                 'AMoD_Price': round(amod_price, 2),
                 'Pot_Transit_Wait_min': round(pot_transit_wait, 2),
-                'Pot_Transit_Total_min': round(pot_transit_total_time, 2)
+                'Pot_Transit_Total_min': round(pot_transit_total_time, 2),
+                'Transit_Path': self.pt_path_choice[od]
             })
 
         return pd.DataFrame(detailed_summary)

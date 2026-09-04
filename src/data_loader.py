@@ -2,7 +2,9 @@ import pandas as pd
 import gzip
 import pickle
 import os
+from collections import Counter
 from src.constants import C_LANE
+from src.transit_paths import segment_incidence
 
 def load_nyc_network(args):
     demand_f = os.path.join(args.input_dir, args.demand_file)
@@ -21,8 +23,23 @@ def load_nyc_network(args):
     with gzip.open(transit_f, "rb") as f:
         data = pickle.load(f)
 
-    opt_data = data["optimization_data"]
-    opt_data = {(o, d): info for (o, d), info in opt_data.items() if (o, d) in OD_pairs}
+    # Candidate transit paths per OD. The old pickle stores a single dict per OD, the
+    # multi-path one a list sorted by travel time with index 0 = the old reference path.
+    pt_paths = {}
+    for od in OD_pairs:
+        paths = data["optimization_data"][od]
+        if isinstance(paths, dict):
+            paths = [paths]
+        pt_paths[od] = paths[:args.num_path]
+
+    counts = Counter(len(p) for p in pt_paths.values())
+    if args.num_path > 1 and set(counts) == {1}:
+        raise ValueError(
+            f"--num_path={args.num_path} but the transit file {transit_f} has a single path per OD. "
+            "Pass --transit_file metro/optimization_inputs_k5.pkl.gz."
+        )
+    print(f"Transit candidate paths per OD: {dict(sorted(counts.items()))}")
+
     lines_dict = data["lines"]
 
     # Calculate Network Constants
@@ -58,7 +75,8 @@ def load_nyc_network(args):
         'map_df': map_df,
         'paths_df': paths_df,
         'OD_pairs': OD_pairs,
-        'opt_data': opt_data,
+        'pt_paths': pt_paths,
+        'seg_to_odp': segment_incidence(pt_paths),
         'lines_dict': lines_dict,
         'L': L,
         'E_a': E_a,

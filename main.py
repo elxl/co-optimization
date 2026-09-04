@@ -7,7 +7,8 @@ from src.data_loader import load_nyc_network
 from src.social_optimum import SocialOptimum, evaluate_baseline_social_cost
 from src.amod_br import AMoD_BestResponse
 from src.transit_br import TransitBestResponse
-from src.constants import BASE_LOAD_FACTOR
+from src.transit_paths import choose_path
+from src.constants import BASE_LOAD_FACTOR, MPH_TO_M_PER_MIN
 
 def main():
     parser = argparse.ArgumentParser(description="Multimodal Game Theory Pipeline")
@@ -21,7 +22,8 @@ def main():
     parser.add_argument("--ca", type=float, default=1.0, help='AMoD operation cost per km')
     parser.add_argument("--cl", type=float, default=320, help='Metro operation cost per line per hour')
     parser.add_argument("--pt_cap", type=int, default=900, help='Transit capacity (passengers per departure)')
-    parser.add_argument("--walk", type=float, default=3.6, help='Walking speed (mph)')
+    parser.add_argument("--walk", type=float, default=3, help='Walking speed (mph)')
+    parser.add_argument("--num_path", type=int, default=1, help='Number of candidate transit paths per OD (1 = original single-path model)')
     parser.add_argument("--vot", type=float, default=0.4, help='Environmental price for driving')
     parser.add_argument("--vot1", type=float, default=0.3, help='Value of time for passengers')
     parser.add_argument("--mip", type=float, default=0.01, help='Optimization gap.')
@@ -57,6 +59,12 @@ def main():
         target_amod_strategy = so_save_data['target_amod_strategy']
         amod_so_state = so_save_data['amod_so_state']
         transit_so_state = so_save_data['transit_so_state']
+        if 'path_choice' not in target_transit_strategy:
+            # Old single-path pickle: recover the path choice under the loaded frequencies.
+            path_choice = {od: choose_path(net_data['pt_paths'][od], target_transit_strategy['frequencies'],
+                                           args.walk * MPH_TO_M_PER_MIN)[0] for od in net_data['OD_pairs']}
+            target_transit_strategy['path_choice'] = path_choice
+            transit_so_state['path_choice'] = path_choice
         t_so = time.time()
         print(f"Loaded successfully! Minimum Social Cost was: {so_cost:.2f}")
     else:
@@ -90,7 +98,8 @@ def main():
             transit_so_state = {
                 'frequencies': target_transit_strategy['frequencies'],
                 'fare': target_transit_strategy['fare'],
-                'x_pt': {od: so_model.x_pt[od].X for od in net_data['OD_pairs']}
+                'x_pt': {od: so_model.x_pt[od].X for od in net_data['OD_pairs']},
+                'path_choice': target_transit_strategy['path_choice']
             }
 
             # Save so solution to file for future loading (debugging)
@@ -103,7 +112,8 @@ def main():
                 'target_transit_strategy': target_transit_strategy,
                 'target_amod_strategy': target_amod_strategy,
                 'amod_so_state': amod_so_state,
-                'transit_so_state': transit_so_state
+                'transit_so_state': transit_so_state,
+                'num_path': args.num_path
             }
             with open(so_save_path, 'wb') as f:
                 pickle.dump(so_save_data, f)
@@ -174,6 +184,7 @@ def main():
     
     amod_so_state = {
         'f': target_amod_strategy['f'],
+        'r': target_amod_strategy['r'],
         'x_a': amod_so_state['x_a'],
         'x_ap': amod_so_state['x_ap'],
         'pi_a': price_dict
@@ -198,9 +209,9 @@ def main():
         for u_s, v_s in segments:
             # Sum passengers ONLY on this segment (not all passengers using the line)
             segment_passengers = sum(
-                transit_opt_strategy['x_pt'][od] 
-                for od in net_data['OD_pairs'] 
-                if (u_s, v_s, l) in net_data['opt_data'][od]['eta_e_od']
+                transit_opt_strategy['x_pt'][od]
+                for (od, k) in net_data['seg_to_odp'].get((u_s, v_s, l), [])
+                if transit_opt_strategy['path_choice'][od] == k
             )
             
             freq = transit_opt_strategy['frequencies'][l]
@@ -258,22 +269,24 @@ def main():
         # Note: `so_save_data['so_cost']` is `m.ObjVal` — the *regularized* SO objective
         # (= pure_social_cost + (1/theta) * Σ x·ln(x)).
         df_so_cost = evaluate_baseline_social_cost(args, net_data, demand, amod_so_state,
-                                                   transit_so_state['frequencies'])
+                                                   transit_so_state['frequencies'],
+                                                   path_choice=transit_so_state['path_choice'])
         social_cost_so = float(df_so_cost['Total_Social_Cost'].iloc[0])
 
         # Social cost when BOTH operators unilaterally deviate from SO to their
         # individual best responses (AMoD-BR's f/r/x_a/x_ap against Transit-BR's frequencies).
         df_br_cost = evaluate_baseline_social_cost(args, net_data, demand, amod_res_state,
-                                                   transit_opt_strategy['frequencies'])
+                                                   transit_opt_strategy['frequencies'],
+                                                   path_choice=transit_opt_strategy['path_choice'])
         social_cost_br = float(df_br_cost['Total_Social_Cost'].iloc[0])
         print(f"=> Social Cost at SO: ${social_cost_so:.2f}  |  at joint BR deviation: ${social_cost_br:.2f}")
 
-        k_summary = {"bl": args.bl, "ca": args.ca, "cl": args.cl,
+        k_summary = {"bl": args.bl, "ca": args.ca, "cl": args.cl, "num_path": args.num_path,
                     "AMoD_so": amod_so_profit, "Transit_so": transit_so_obj, "AMoD_br": profit_lb, "AMoD_br_gap": gap_pct,
                     "Transit_br": transit_br_obj, "V_a": v_a, "V_pt": v_pt, 'Total_V': v_a + v_pt,
                     'Social_cost': social_cost_so, 'Social_cost_br': social_cost_br,
                     'SO_obj_regularized': so_save_data['so_cost'],
-                    't_so': t_so - t_start, 't_amod_br': t_abr_start - t_abr_end, 't_transit_br': t_ptbr_start - t_ptbr_end, 't_total': t_end - t_start
+                    't_so': t_so - t_start, 't_amod_br': t_abr_end - t_abr_start, 't_transit_br': t_ptbr_end - t_ptbr_start, 't_total': t_end - t_start
                     }
         df_k_summary = pd.DataFrame([k_summary])
         df_k_summary.to_csv(os.path.join(args.output_dir, f"k_summary{suffix}.csv"), index=False)
