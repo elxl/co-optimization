@@ -26,6 +26,9 @@ class SocialOptimum:
         #     self.m.params.NonConvex = 1
         self.m.params.NonConvex = 0
         self.m.params.MIPGap = args.mip
+        self.m.params.Threads = args.threads
+        if args.time_limit is not None:
+            self.m.params.TimeLimit = args.time_limit
         self.m.params.OutputFlag = 1 # Keep output on for the main SO run
 
         self._build_model()
@@ -152,8 +155,13 @@ class SocialOptimum:
 
     def solve(self):
         self.m.optimize()
+        self.status = self.m.status
         
-        if self.m.status == GRB.OPTIMAL:
+        # Accept the optimal solution, or the best incumbent when the time limit was hit
+        if self.m.status == GRB.OPTIMAL or (self.m.status == GRB.TIME_LIMIT and self.m.SolCount > 0):
+            self.mip_gap = self.m.MIPGap
+            if self.m.status == GRB.TIME_LIMIT:
+                print(f"Social Optimum hit the time limit; using incumbent with MIP gap {self.mip_gap:.4f}")
             # Selected transit path per OD (single-candidate ODs are always on path 0)
             self.path_choice = {}
             for od in self.net['OD_pairs']:
@@ -175,15 +183,15 @@ class SocialOptimum:
             
             return self.m.ObjVal, target_transit_strategy, target_amod_strategy
         else:
-            print("Social Optimum Infeasible!")
+            print(f"Social Optimum failed (Gurobi status {self.m.status}, no incumbent).")
             return None, None, None
     
     def get_results_dataframe(self):
         """
         Recover AMoD price and post-process solved model to get statistics.
         """
-        if self.m.status != GRB.OPTIMAL:
-            print("Model not solved to optimality. Cannot generate results.")
+        if self.m.SolCount == 0:
+            print("Model has no solution. Cannot generate results.")
             return None
 
         net = self.net
@@ -320,6 +328,8 @@ class SocialOptimum:
             "K_l": args.cl,
             "C_ij": args.ca,
             "Num_Path": args.num_path,
+            "SO_status": self.status,
+            "SO_gap": round(self.mip_gap, 6),
             # Social Cost (main metric)
             "Total_Social_Cost": round(total_physical_cost, 2),
             

@@ -23,11 +23,13 @@ class TransitBestResponse:
         self.m = gp.Model("Transit_BestResponse")
         self.m.params.MIPGap = args.mip
         self.m.params.NonConvex = 0
+        if args.time_limit is not None:
+            self.m.params.TimeLimit = args.time_limit
 
         self.m.params.MIPFocus = 3     # Focus heavily on proving the bound
         self.m.params.Cuts = 2         # Aggressive cut generation for Big-M
         self.m.params.Method = 2       # Use the Barrier method for the root LP
-        self.m.params.Threads = 0      # Use all available CPU cores
+        self.m.params.Threads = args.threads
 
         self._build_model()
 
@@ -199,9 +201,15 @@ class TransitBestResponse:
 
     def solve(self):
         self.m.optimize()
-        if self.m.status == GRB.OPTIMAL:
-            # Dual upper bound from the relaxation
-            profit_ub = self.m.ObjVal
+        self.status = self.m.status
+        if self.m.status == GRB.OPTIMAL or (self.m.status == GRB.TIME_LIMIT and self.m.SolCount > 0):
+            self.mip_gap = self.m.MIPGap
+            timed_out = self.m.status == GRB.TIME_LIMIT
+            # Dual upper bound from the relaxation. Under a time limit the incumbent is not the
+            # relaxation's optimum, so the proven bound (ObjBound) is the valid upper bound.
+            profit_ub = self.m.ObjBound if timed_out else self.m.ObjVal
+            if timed_out:
+                print(f"Transit BR hit the time limit; incumbent {self.m.ObjVal:.2f}, bound {profit_ub:.2f}, MIP gap {self.mip_gap:.4f}")
             freq_opt = {l: self.s_l[l].X for l in self.net['L']}
             solver_x_pt = {od:self.x_pt[od].X for od in self.net['OD_pairs']}
 
@@ -241,8 +249,9 @@ class TransitBestResponse:
             if tight_relaxation:
                 print("\n--- Transit Best Response Results ---")
                 print("Relaxation State:            TIGHT")
-                print(f"Optimal Profit:              {profit_ub:.2f}")
-                print("Suboptimality Gap:           0.00% (Solution is strictly optimal)\n")
+                gap = 100 * self.mip_gap if timed_out else 0
+                print(f"Optimal Profit:              {self.m.ObjVal:.2f}")
+                print(f"Suboptimality Gap:           {gap:.2f}%\n")
 
                 # Selected transit path per OD (single-candidate ODs are always on path 0)
                 path_choice = {}
@@ -258,7 +267,7 @@ class TransitBestResponse:
                 }
 
                 # Return the Upper Bound as the absolute optimal profit
-                return profit_ub, br_strategy, True, 0
+                return self.m.ObjVal, br_strategy, True, gap
             # ---------------------------------------------------------
             # Path 2: relaxation is loose (repair frequencie)
             # ---------------------------------------------------------
@@ -363,7 +372,7 @@ class TransitBestResponse:
                 return profit_lb, br_strategy, False, gap
 
         else:
-            print("Transit Best Response Failed to Solve.")
+            print(f"Transit Best Response failed (Gurobi status {self.m.status}, no incumbent).")
             return None, None, False, None
         
     def get_results_dataframe(self, transit_res, amod_so_solution):

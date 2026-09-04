@@ -31,6 +31,7 @@ class AMoD_BestResponse:
         # Build base model
         self.m = gp.Model("AMoD_Best_Response")
         self.m.params.NonConvex = 0
+        self.m.params.Threads = args.threads
         self.m.params.OutputFlag = 0
         self._build_base_model()
     

@@ -33,6 +33,13 @@ def main():
     parser.add_argument("--reg", type=int, default=2, help='Regularization. (0: no regularization, 1: quadratic, 2: entropy)')
     parser.add_argument("--theta", type=float, default=0.5, help='Coefficient for regularization term (higher theta = more spread out; lower theta = closer to original objective)')
     parser.add_argument("--load_so", type=str, default=None, help='File to load the social optimum solution from instead of solving the optimization problems.')
+    parser.add_argument("--stage", type=str, default='all', choices=['all', 'so', 'br'],
+                        help="'so': solve and save the social optimum only; 'br': load it (from --load_so or "
+                             "<output_dir>/so_solution<suffix>.pkl) and run both best responses; 'all': full pipeline")
+    parser.add_argument("--threads", type=int, default=int(os.environ.get('SLURM_CPUS_PER_TASK', 0)),
+                        help='Gurobi threads (default: SLURM allocation, or 0 = Gurobi default)')
+    parser.add_argument("--time_limit", type=float, default=None,
+                        help='Gurobi time limit in seconds for the social optimum and the transit best response')
     parser.add_argument("--plot", type=bool, default=False, help='Whether to generate convergence plot online for the AMoD Best Response SCA algorithm.')
     args = parser.parse_args()
 
@@ -41,6 +48,7 @@ def main():
         suffix = f"_{args.bl}_{args.ca}_{args.cl}{reg_dict[args.reg]}_theta{args.theta}"
     else:
         suffix = f"_{args.bl}_{args.ca}_{args.cl}"
+    os.makedirs(args.output_dir, exist_ok=True)
 
     t_start = time.time()
     print("--- 1. Loading Network Data ---")
@@ -50,9 +58,10 @@ def main():
     # ----------------------
     # Social Optimum
     # ----------------------
-    if args.load_so:
-        print(f"\n---2. Loading Social Optimum Solution from {args.load_so} ---")
-        with open(args.load_so, "rb") as f:
+    load_so = args.load_so or (os.path.join(args.output_dir, f"so_solution{suffix}.pkl") if args.stage == 'br' else None)
+    if load_so:
+        print(f"\n---2. Loading Social Optimum Solution from {load_so} ---")
+        with open(load_so, "rb") as f:
             so_save_data = pickle.load(f)
         so_cost = so_save_data['so_cost']
         target_transit_strategy = so_save_data['target_transit_strategy']
@@ -103,8 +112,6 @@ def main():
             }
 
             # Save so solution to file for future loading (debugging)
-            if not os.path.exists(args.output_dir):
-                os.makedirs(args.output_dir)
                 
             so_save_path = os.path.join(args.output_dir, f"so_solution{suffix}.pkl")
             so_save_data = {
@@ -113,11 +120,16 @@ def main():
                 'target_amod_strategy': target_amod_strategy,
                 'amod_so_state': amod_so_state,
                 'transit_so_state': transit_so_state,
-                'num_path': args.num_path
+                'num_path': args.num_path,
+                'SO_status': so_model.status,
+                'SO_gap': so_model.mip_gap
             }
             with open(so_save_path, 'wb') as f:
                 pickle.dump(so_save_data, f)
             print(f"Saved Social Optimum states to {so_save_path}")
+            if args.stage == 'so':
+                print(f"Stage 'so' done in {(time.time() - t_start)/60:.2f} minutes.")
+                return
         else:
             raise RuntimeError("Social Optimum optimization failed to find a solution. Please check the model and data. If you have a previously solved solution, you can load it using the --load_so argument.")
 
@@ -177,7 +189,7 @@ def main():
     # Transit best response
     # ----------------------
     # Get AMoD prices
-    if args.load_so and os.path.exists(args.load_so):
+    if load_so:
         price_dict = so_save_data['amod_so_state']['pi_a']
     else:
         price_dict = df_so_results.set_index(['O', 'D'])['AMoD_Price'].to_dict()
@@ -196,7 +208,8 @@ def main():
     t_ptbr_end = time.time()
     print(f"Transit Best Response completed in {(t_ptbr_end - t_ptbr_start)/60:.2f} minutes.")
 
-    transit_summary = {"Tight": int(tight), "gap": gap, "time": t_ptbr_end - t_ptbr_start}
+    transit_summary = {"Tight": int(tight), "gap": gap, "time": t_ptbr_end - t_ptbr_start,
+                       "PTBR_status": transit_br.status, "PTBR_gap": transit_br.mip_gap}
     suffix_ptbr = f"_{args.bl}_{args.ca}_{args.cl}_{args.pt_cap}"
     with open(os.path.join(args.output_dir, f"transit_br_summary{suffix_ptbr}.pkl"), "wb") as f:
         pickle.dump(transit_summary, f)
@@ -286,6 +299,8 @@ def main():
                     "Transit_br": transit_br_obj, "V_a": v_a, "V_pt": v_pt, 'Total_V': v_a + v_pt,
                     'Social_cost': social_cost_so, 'Social_cost_br': social_cost_br,
                     'SO_obj_regularized': so_save_data['so_cost'],
+                    'SO_status': so_save_data.get('SO_status'), 'SO_gap': so_save_data.get('SO_gap'),
+                    'PTBR_tight': int(tight), 'PTBR_status': transit_br.status, 'PTBR_gap': transit_br.mip_gap,
                     't_so': t_so - t_start, 't_amod_br': t_abr_end - t_abr_start, 't_transit_br': t_ptbr_end - t_ptbr_start, 't_total': t_end - t_start
                     }
         df_k_summary = pd.DataFrame([k_summary])
