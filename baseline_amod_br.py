@@ -37,6 +37,8 @@ def main():
     parser.add_argument("--pt_cap", type=int, default=900, help='Transit capacity (passengers per departure)')
     parser.add_argument("--walk", type=float, default=3, help='Walking speed (mph)')
     parser.add_argument("--num_path", type=int, default=1, help='Number of candidate transit paths per OD (1 = original single-path model)')
+    parser.add_argument("--threads", type=int, default=int(os.environ.get('SLURM_CPUS_PER_TASK', 0)),
+                        help='Gurobi threads (default: SLURM allocation, or 0 = Gurobi default)')
     parser.add_argument("--vot", type=float, default=0.4, help='Value of time for road users (drivers)')
     parser.add_argument("--vot1", type=float, default=0.3, help='Value of time for passengers')
     parser.add_argument("--mip", type=float, default=0.01, help='Optimization gap.')
