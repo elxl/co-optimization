@@ -210,15 +210,20 @@ class SocialOptimum:
         for od in net['OD_pairs']:
             rel_paths = net['paths_df'][(net['paths_df']['o_zone'] == od[0]) & (net['paths_df']['d_zone'] == od[1])]['path_id'].unique()
             amod_flow = self.x_a[od].X
-            
+            path_flow = sum(self.x_ap[p].X for p in rel_paths)
+
             used_paths_count = sum(1 for p in rel_paths if self.x_ap[p].X > 1e-6)
             best_p = sorted(rel_paths)[0] if len(rel_paths) > 0 else None
-            
-            if amod_flow > 1e-6:
-                pot_amod_dist = sum(self.x_ap[p].X * sum(net['dist_map'][r.u, r.v] for r in net['paths_df'][net['paths_df']['path_id']==p].itertuples()) 
-                                for p in rel_paths) / (amod_flow * 1000.0)
-                pot_amod_time = sum(self.x_ap[p].X * (sum(congested_time_map[r.u, r.v] for r in net['paths_df'][net['paths_df']['path_id']==p].itertuples()) + self.AMOD_WAIT) 
-                                for p in rel_paths) / amod_flow
+
+            # Guard on the path flows, which are what the weighted average is built from. Where
+            # AMoD demand collapses onto the 1e-6 lower bound of x_a, Gurobi can satisfy
+            # x_a == sum(x_ap) to feasibility tolerance with every path flow at zero, which would
+            # report a 0 km / 0 min trip. Fall back to the reference path in that case.
+            if path_flow > 1e-6:
+                pot_amod_dist = sum(self.x_ap[p].X * sum(net['dist_map'][r.u, r.v] for r in net['paths_df'][net['paths_df']['path_id']==p].itertuples())
+                                for p in rel_paths) / (path_flow * 1000.0)
+                pot_amod_time = sum(self.x_ap[p].X * (sum(congested_time_map[r.u, r.v] for r in net['paths_df'][net['paths_df']['path_id']==p].itertuples()) + self.AMOD_WAIT)
+                                for p in rel_paths) / path_flow
             elif best_p:
                 p_edges = net['paths_df'][net['paths_df']['path_id'] == best_p]
                 pot_amod_dist = sum(net['dist_map'][r.u, r.v] for r in p_edges.itertuples()) / 1000.0

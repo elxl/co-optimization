@@ -459,12 +459,16 @@ class AMoD_BestResponse:
             
             amod_flow = amod_res['x_a'][od]
             transit_flow = d - amod_flow
+            path_flow = sum(amod_res['x_ap'].get(p, 0) for p in rel_paths)
 
             best_p = sorted(rel_paths)[0] if len(rel_paths) > 0 else None
 
-            if amod_flow > 1e-6:
-                pot_amod_dist = sum(amod_res['x_ap'].get(p, 0) * sum(self.net['dist_map'][r.u, r.v] for r in self.net['paths_df'][self.net['paths_df']['path_id']==p].itertuples()) for p in rel_paths) / (amod_flow * 1000.0)
-                pot_amod_time = sum(amod_res['x_ap'].get(p, 0) * (sum(congested_time_map[r.u, r.v] for r in self.net['paths_df'][self.net['paths_df']['path_id']==p].itertuples()) + AMOD_WAIT) for p in rel_paths) / amod_flow
+            # Guard on the path flows: at an OD whose AMoD demand sits at its lower bound the
+            # path flows can all be zero, which would report a 0 km / 0 min trip (see the same
+            # guard in social_optimum.get_results_dataframe).
+            if path_flow > 1e-6:
+                pot_amod_dist = sum(amod_res['x_ap'].get(p, 0) * sum(self.net['dist_map'][r.u, r.v] for r in self.net['paths_df'][self.net['paths_df']['path_id']==p].itertuples()) for p in rel_paths) / (path_flow * 1000.0)
+                pot_amod_time = sum(amod_res['x_ap'].get(p, 0) * (sum(congested_time_map[r.u, r.v] for r in self.net['paths_df'][self.net['paths_df']['path_id']==p].itertuples()) + AMOD_WAIT) for p in rel_paths) / path_flow
             elif best_p:
                 p_edges = self.net['paths_df'][self.net['paths_df']['path_id'] == best_p]
                 pot_amod_dist = sum(self.net['dist_map'][r.u, r.v] for r in p_edges.itertuples()) / 1000.0

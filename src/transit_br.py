@@ -403,11 +403,15 @@ class TransitBestResponse:
                 
                 # Use the FIXED AMoD solution strictly for calculating routing proportions 
                 fixed_x_a = amod_so_solution['x_a'][od]
+                fixed_path_flow = sum(amod_so_solution['x_ap'].get(p, 0) for p in rel_paths)
                 best_p = sorted(rel_paths)[0] if len(rel_paths) > 0 else None
 
-                if fixed_x_a > 1e-6:
-                    pot_amod_dist = sum(amod_so_solution['x_ap'].get(p, 0) * sum(self.net['dist_map'][r.u, r.v] for r in self.net['paths_df'][self.net['paths_df']['path_id']==p].itertuples()) for p in rel_paths) / (fixed_x_a * 1000.0)
-                    pot_amod_time = sum(amod_so_solution['x_ap'].get(p, 0) * (sum(t_e[r.u, r.v] for r in self.net['paths_df'][self.net['paths_df']['path_id']==p].itertuples()) + AMOD_WAIT) for p in rel_paths) / fixed_x_a
+                # Guard on the path flows: at an OD whose AMoD demand sits at its lower bound the
+                # path flows can all be zero, which would report a 0 km / 0 min trip (see the same
+                # guard in social_optimum.get_results_dataframe).
+                if fixed_path_flow > 1e-6:
+                    pot_amod_dist = sum(amod_so_solution['x_ap'].get(p, 0) * sum(self.net['dist_map'][r.u, r.v] for r in self.net['paths_df'][self.net['paths_df']['path_id']==p].itertuples()) for p in rel_paths) / (fixed_path_flow * 1000.0)
+                    pot_amod_time = sum(amod_so_solution['x_ap'].get(p, 0) * (sum(t_e[r.u, r.v] for r in self.net['paths_df'][self.net['paths_df']['path_id']==p].itertuples()) + AMOD_WAIT) for p in rel_paths) / fixed_path_flow
                 elif best_p:
                     p_edges = self.net['paths_df'][self.net['paths_df']['path_id'] == best_p]
                     pot_amod_dist = sum(self.net['dist_map'][r.u, r.v] for r in p_edges.itertuples()) / 1000.0
