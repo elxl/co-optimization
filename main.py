@@ -24,6 +24,7 @@ def main():
     parser.add_argument("--pt_cap", type=int, default=900, help='Transit capacity (passengers per departure)')
     parser.add_argument("--walk", type=float, default=3, help='Walking speed (mph)')
     parser.add_argument("--num_path", type=int, default=1, help='Number of candidate transit paths per OD (1 = original single-path model)')
+    parser.add_argument("--num_path_amod", type=int, default=None, help='Keep only the first N candidate AMoD routes per OD (ranks _0.._N-1 in paths.csv); default: all (original behavior)')
     parser.add_argument("--vot", type=float, default=0.4, help='Environmental price for driving')
     parser.add_argument("--vot1", type=float, default=0.3, help='Value of time for passengers')
     parser.add_argument("--mip", type=float, default=0.01, help='Optimization gap.')

@@ -17,6 +17,14 @@ def load_nyc_network(args):
     paths_df = pd.read_csv(amod_f)
     demand = pd.read_csv(demand_f)
 
+    # Optional cap on the AMoD candidate-route set (R1:9 sensitivity). Ranks are the trailing
+    # '_k' of path_id; every OD has rank 0, so the OD set is unchanged. None = keep all (default).
+    cap = getattr(args, 'num_path_amod', None)
+    if cap is not None:
+        rank = paths_df['path_id'].str.rsplit('_', n=1).str[1].astype(int)
+        paths_df = paths_df[rank < cap].reset_index(drop=True)
+        print(f"AMoD candidate routes capped at {cap} per OD: {paths_df['path_id'].nunique()} paths kept")
+
     OD_pairs = list(paths_df.groupby(['o_zone', 'd_zone']).groups.keys())
     demand_dict = {od: demand[(demand['PULocationID'] == od[0]) & (demand['DOLocationID'] == od[1])]['trip_count'].values[0] for od in OD_pairs}
 
