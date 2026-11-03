@@ -1,0 +1,11 @@
+# Data preparation only (not needed to run main.py). Also needs:
+#   Java 21+ (r5py) and osmium-tool (02_clip_osm.sh: `brew install osmium-tool` / `apt install osmium-tool`).
+# Versions the processed inputs were built with:
+pandas>=2.2,<3     # 04 uses groupby.apply(include_groups=...)
+geopandas>=1.1
+shapely>=2.1
+pyarrow>=14        # reads the TLC parquet
+r5py==1.1.1
+osmnx==2.0.7
+networkx>=3.4
+scikit-learn       # osmnx.nearest_nodes on an unprojected graph

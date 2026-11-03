@@ -1,0 +1,35 @@
+# --- OS / Python / editor ---
+.DS_Store
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+*.bak*
+.venv/
+co-opt-env/
+.claude/
+CLAUDE.md
+
+# --- Not released yet: analysis notebooks, cluster scripts, rebuttal material ---
+*.ipynb
+scripts/
+documents/
+server.txt
+mechanism_robust.png
+
+# --- Run artifacts and scratch ---
+results/
+results_rebuttal/
+logs/
+logs_*/
+cache/
+tmp/
+
+# --- Riyadh exploratory data (not used in the paper) ---
+data/
+
+# --- NYC data: raw inputs are downloaded (see README); only the processed inputs read by main.py are tracked ---
+data_nyc/*
+!data_nyc/processed/
+data_nyc/processed/metro/itineraries_*
+data_nyc/processed/metro/paths_summary_*
+data_nyc/processed/metro/gtfs_frequencies.csv
