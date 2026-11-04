@@ -69,7 +69,7 @@ commands, compatible-input requirements, and validation limits.
 
 ## Usage
 
-The core inputs used in the experiment scripts under `scripts/` are:
+`python main.py --help` lists all arguments. The core inputs used in the experiment scripts under `scripts/` are:
 
 - **`--bl`**: Background road traffic as a fraction of each edge's capacity (`b_e = bl × capacity_e`).
 - **`--ca`**: AMoD operating cost per vehicle-kilometre. 
@@ -108,8 +108,6 @@ python main.py --num_path 3 --transit_file metro/optimization_inputs_k5.pkl.gz .
 # AMoD best response against the historical transit schedule
 python baseline_amod_br.py --bl 0.5 --ca 0.6 ...
 ```
-
-`python main.py --help` lists all arguments (BPR parameters `--alpha/--beta`, default 0.8 / 3, regularization `--reg/--theta`, `--mip` gap, `--threads`, `--time_limit`, ...).
 
 ### Output
 Files are written to `--output_dir` using the suffix described above, inserted before the file extension:
