@@ -12,7 +12,7 @@ Raw-data download links are in `download_raw.sh`. When using a newly downloaded 
 feed used in the paper.
 
 ```bash
-pip install -r data_prep/requirements.txt         # + Java 21 for r5py, osmium-tool for step 02
+pip install -r data_prep/requirements.txt         # + Java 21 for r5py, osmium-tool for step 02. Look at the requirement file for more detail.
 bash   data_prep/download_raw.sh                  # raw data into data_nyc/ (skips files that exist)
 
 PREP_OUT=data_nyc/processed_rebuilt
